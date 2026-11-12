@@ -22,12 +22,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import app.commacabin.audio.AudioUi
 import app.commacabin.audio.RestAudio
 import app.commacabin.audio.RestSettings
 import app.commacabin.audio.TtsSlot
+import app.commacabin.control.ControlBench
+import app.commacabin.control.ControlUiState
+import app.commacabin.control.FileControlStore
 import app.commacabin.probe.AmbientProbe
 import app.commacabin.probe.Cancellable
 import app.commacabin.probe.FileRecoveryStore
@@ -43,6 +47,7 @@ import app.commacabin.rest.parkingBlock
 import app.commacabin.sdk.AndroidAudioFocus
 import app.commacabin.sdk.AndroidSounds
 import app.commacabin.sdk.CarParkingSource
+import app.commacabin.sdk.PleosControlPort
 import app.commacabin.sdk.PleosLightPort
 import app.commacabin.sdk.PleosTtsEngine
 import app.commacabin.sdk.PleosVehicleReadPort
@@ -58,6 +63,8 @@ class MainActivity : ComponentActivity() {
     private val uiState = mutableStateOf(ProbeUiState())
     private val supportState = mutableStateOf(SupportUiState())
     private val supportTab = mutableStateOf(false)
+    private val controlTab = mutableStateOf(false)
+    private val controlState = mutableStateOf(ControlUiState())
     private val ttsState = mutableStateOf(TtsUiState())
     private lateinit var restState: MutableState<RestState>
     private val audioState = mutableStateOf(AudioUi())
@@ -69,12 +76,17 @@ class MainActivity : ComponentActivity() {
     private lateinit var door: DoorMonitor
     private lateinit var rest: RestFlow
     private lateinit var audio: RestAudio
+    private lateinit var bench: ControlBench
     private lateinit var probe: AmbientProbe
     private lateinit var support: SupportDiagnostics
     private lateinit var tts: TtsDiagnostics
     /** The window's own brightness before the rest flow touched it; the system brightness is never changed. */
     private var baseBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
     private var keepScreenOn = false
+    /** Activity between onStart and onStop. */
+    private var started = false
+    /** The [ControlScreen] composable is in the composition (dev tools open, control tab selected, not resting). */
+    private var controlShown = false
 
     private val scheduler = object : Scheduler {
         override fun schedule(delayMs: Long, task: () -> Unit): Cancellable {
@@ -92,8 +104,12 @@ class MainActivity : ComponentActivity() {
         parking = CarParkingSource(this, main) { state ->
             probe.onParkingChanged(state)
             rest.onParking(state)
+            bench.onParking(state)
         }
-        door = DoorMonitor(readPort, scheduler, { line -> Log.i(DOOR_TAG, line) }) { state -> rest.onDoor(state) }
+        door = DoorMonitor(readPort, scheduler, { line -> Log.i(DOOR_TAG, line) }) { state ->
+            rest.onDoor(state)
+            bench.onDoor(state.status)
+        }
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         audio = RestAudio(
             scheduler = scheduler,
@@ -141,6 +157,18 @@ class MainActivity : ComponentActivity() {
             lease = RECORD_LEASE,
             log = { line -> Log.i(TAG, line) },
         )
+        bench = ControlBench(
+            port = PleosControlPort(vehicle, main),
+            store = FileControlStore(File(filesDir, FileControlStore.FILE_NAME)),
+            scheduler = scheduler,
+            parking = { parking.state },
+            door = { door.state.status },
+            brightnessRecordPresent = { probe.state.record != null || probe.state.recordProblem != null },
+            clock = System::currentTimeMillis,
+            lease = CONTROL_LEASE,
+            log = { line -> Log.i(CONTROL_TAG, line) },
+        )
+        bench.onState = { controlState.value = it }
         support = SupportDiagnostics(readPort, scheduler, System::currentTimeMillis) { line -> Log.i(SUPPORT_TAG, line) }
         support.onState = { supportState.value = it }
         tts = TtsDiagnostics({ PleosTtsEngine(applicationContext, main) }, scheduler, ttsSlot, AndroidAudioFocus(this, main)) { line -> Log.i(TTS_TAG, line) }
@@ -148,6 +176,7 @@ class MainActivity : ComponentActivity() {
         probe.onState = { uiState.value = it }
         uiState.value = probe.state
         probe.start()
+        bench.start()
         parking.start()
         // "SDK initialized" does not mean the Vehicle service is bound yet, so the first read waits briefly.
         main.postDelayed({ probe.refresh() }, FIRST_READ_DELAY_MS)
@@ -180,10 +209,31 @@ class MainActivity : ComponentActivity() {
         Column {
             Row(Modifier.padding(start = 24.dp, top = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 TabButton("← 휴식 화면", selected = false) { devToolsOpen.value = false }
-                TabButton("밝기 검증", selected = !supportTab.value) { supportTab.value = false }
-                TabButton("지원 진단(읽기 전용)", selected = supportTab.value) { supportTab.value = true }
+                TabButton("밝기 검증", selected = !supportTab.value && !controlTab.value) {
+                    supportTab.value = false
+                    controlTab.value = false
+                }
+                TabButton("지원 진단(읽기 전용)", selected = supportTab.value) {
+                    supportTab.value = true
+                    controlTab.value = false
+                }
+                TabButton("제어 검증", selected = controlTab.value) {
+                    controlTab.value = true
+                    supportTab.value = false
+                }
             }
-            if (supportTab.value) {
+            if (controlTab.value) {
+                // Leaving by another tab, [← 휴식 화면], Back or a rest start removes this composable.
+                DisposableEffect(Unit) {
+                    controlShown = true
+                    syncControlVisibility()
+                    onDispose {
+                        controlShown = false
+                        syncControlVisibility()
+                    }
+                }
+                ControlScreen(controlState.value, bench)
+            } else if (supportTab.value) {
                 SupportScreen(
                     state = supportState.value,
                     tts = ttsState.value,
@@ -209,6 +259,13 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         door.start()
         rest.onVisible()
+        started = true
+        syncControlVisibility()
+    }
+
+    /** The bench takes new work only while its screen is really visible: Activity started and the control tab shown. */
+    private fun syncControlVisibility() {
+        if (started && controlShown) bench.onVisible() else bench.onHidden()
     }
 
     /**
@@ -219,6 +276,8 @@ class MainActivity : ComponentActivity() {
         rest.onHidden()
         audio.stopAll()
         tts.stopSpeech()
+        started = false
+        syncControlVisibility()
         door.stop()
         restoreWindow()
         super.onStop()
@@ -254,6 +313,7 @@ class MainActivity : ComponentActivity() {
         main.removeCallbacksAndMessages(null)
         restoreWindow()
         audio.stopAll()
+        bench.close()
         support.close()
         tts.close()
         probe.close()
@@ -269,6 +329,7 @@ class MainActivity : ComponentActivity() {
         const val REST_TAG = "RestFlow"
         const val DOOR_TAG = "RestDoor"
         const val AUDIO_TAG = "RestAudio"
+        const val CONTROL_TAG = "ControlBench"
         const val FIRST_READ_DELAY_MS = 1_500L
         const val DIM_WINDOW_BRIGHTNESS = 0.02f
         /** Only [RestSettings] (onboarding version, sound choice and level) are stored here. */
@@ -276,6 +337,9 @@ class MainActivity : ComponentActivity() {
 
         /** One lease per process: a newer Activity's probe makes any older probe inert. */
         val RECORD_LEASE = RecordLease()
+
+        /** Owner of the STEP 7 control record file: one bench per process. */
+        val CONTROL_LEASE = RecordLease()
     }
 }
 
