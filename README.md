@@ -2,7 +2,9 @@
 
 현대자동차그룹 차량용 앱 개발 공모전을 위한 Android 프로젝트입니다.
 
-`jeonyul` 브랜치에서 새로 개발합니다. 앱 첫 화면은 주차 중 조용히 쉬는 흐름입니다: 첫 실행 안내 → 휴식 준비(픽업 시각, 주차·조수석 문·시간 조건) → 휴식 중(남은 시간, 10초 뒤 화면 어둡게) → 종료(이유·시각) → 다시 쉬기. 이 단계는 중간 산출물입니다. 차량 상태는 읽기만 하고, 시트·조명·공조 적용과 복원, 휴식 소리, 음성 안내는 아직 연결하지 않았습니다(요구사항: docs/product-spec.md). 검증 결과는 docs/verification/rest-flow.md에 기록합니다.
+`jeonyul` 브랜치에서 새로 개발합니다. 앱 첫 화면은 주차 중 조용히 쉬는 흐름입니다: 첫 실행 안내 → 휴식 준비(픽업 시각, 주차·조수석 문·시간 조건) → 휴식 중(남은 시간, 10초 뒤 화면 어둡게) → 종료(이유·시각) → 다시 쉬기. 휴식 소리(켬/조용히, 크기 3단계, 끝나기 1분 전부터 작아짐)와 정상 종료 안내(안내음 → ON_DEVICE 음성 "픽업 2분 전이에요")도 연결했습니다. 이 단계는 중간 산출물입니다. 차량 상태는 읽기만 하고, 시트·조명·공조 적용과 복원은 아직 연결하지 않았습니다(요구사항: docs/product-spec.md). 검증 결과는 docs/verification/rest-flow.md, docs/verification/rest-audio.md에 기록합니다.
+
+휴식음과 안내음은 `tools/gen_rest_audio.py`(파이썬 표준 라이브러리)로 직접 만든 음원입니다. `python3 -I tools/gen_rest_audio.py app/src/main/res/raw`로 같은 파일을 다시 만들 수 있습니다.
 
 앰비언트 밝기 적용·복원 검증(docs/verification/ambient-brightness.md)과 차량 지원 진단(docs/verification/vehicle-support.md) 화면은 debug 빌드의 [개발 진단] 보조 화면으로 옮겼습니다. 휴식 중에는 열 수 없습니다.
 

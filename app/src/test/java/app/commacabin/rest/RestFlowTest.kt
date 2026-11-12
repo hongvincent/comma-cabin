@@ -1,5 +1,15 @@
 package app.commacabin.rest
 
+import app.commacabin.audio.AudioFocusPort
+import app.commacabin.audio.ONBOARDING_VERSION
+import app.commacabin.audio.RestAudio
+import app.commacabin.audio.RestAudioPort
+import app.commacabin.audio.RestSettings
+import app.commacabin.audio.SoundLevel
+import app.commacabin.audio.SoundFactory
+import app.commacabin.audio.SoundMode
+import app.commacabin.audio.SoundPlayer
+import app.commacabin.audio.TtsSlot
 import app.commacabin.probe.FakeScheduler
 import app.commacabin.probe.GearState
 import app.commacabin.probe.ParkingState
@@ -12,6 +22,33 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
+/** Records what the flow asks of the audio side. [refuse] makes begin/setSound refuse with that reason. */
+class FakeAudio : RestAudioPort {
+    var refuse: String? = null
+    /** Runs inside begin(), e.g. a vehicle change while the audio is being prepared. */
+    var duringBegin: () -> Unit = {}
+    val calls = mutableListOf<String>()
+
+    override fun begin(session: Int, endElapsedMs: Long, sound: SoundMode, level: SoundLevel): String? {
+        calls += "begin $session $sound $level"
+        duringBegin()
+        return refuse
+    }
+
+    override fun setSound(session: Int, sound: SoundMode): String? {
+        calls += "sound $session $sound"
+        return refuse
+    }
+
+    override fun setLevel(level: SoundLevel) {
+        calls += "level $level"
+    }
+
+    override fun end(session: Int, normal: Boolean) {
+        calls += "end $session normal=$normal"
+    }
+}
+
 class RestFlowTest {
     private val scheduler = FakeScheduler()
     private val zone = ZoneId.of("Asia/Seoul")
@@ -22,8 +59,9 @@ class RestFlowTest {
     private var wallShift = 0L
     private var parking = parked
     private var door = DoorState(DoorStatus.CLOSED)
-    private var onboardingSeen = true
-    private var stored = false
+    private var settings = RestSettings(onboardingVersion = ONBOARDING_VERSION)
+    private val saved = mutableListOf<RestSettings>()
+    private val audio = FakeAudio()
     private val log = mutableListOf<String>()
 
     private val flow by lazy {
@@ -34,8 +72,9 @@ class RestFlowTest {
             zone = { zone },
             parking = { parking },
             door = { door },
-            onboardingSeen = onboardingSeen,
-            markOnboardingSeen = { stored = true },
+            settings = settings,
+            saveSettings = { saved += it },
+            audio = audio,
             log = { log += it },
         ).also { it.onVisible() }
     }
@@ -66,8 +105,8 @@ class RestFlowTest {
     }
 
     @Test
-    fun `onboarding is shown once and only its flag is stored`() {
-        onboardingSeen = false
+    fun `onboarding is shown once and only its version is stored`() {
+        settings = RestSettings(onboardingVersion = 1) // the silent STEP 5 onboarding was seen
         assertEquals(Screen.ONBOARDING, state.screen)
         flow.start()
         assertEquals(Screen.ONBOARDING, state.screen)
@@ -75,7 +114,7 @@ class RestFlowTest {
         flow.dismissOnboarding()
 
         assertEquals(Screen.READY, state.screen)
-        assertTrue(stored)
+        assertEquals(listOf(RestSettings(onboardingVersion = ONBOARDING_VERSION)), saved)
     }
 
     @Test
@@ -322,5 +361,122 @@ class RestFlowTest {
 
         assertEquals(Screen.ENDED, state.screen)
         assertEquals(EndReason.APP_LEFT, state.ending!!.reason)
+    }
+
+    @Test
+    fun `the audio side is asked only after the vehicle and time checks, and its refusal keeps the ready screen`() {
+        settings = RestSettings(onboardingVersion = ONBOARDING_VERSION, sound = SoundMode.ON)
+        door = DoorState(DoorStatus.OPEN)
+        flow.start()
+        assertTrue(audio.calls.isEmpty())
+
+        door = DoorState(DoorStatus.CLOSED)
+        audio.refuse = "focus refused"
+        flow.start()
+        assertEquals(Screen.READY, state.screen)
+        assertEquals("시작하지 않았어요. focus refused", state.notice)
+
+        audio.refuse = null
+        flow.start()
+        assertEquals(Screen.RESTING, state.screen)
+        assertEquals(1, state.session!!.id) // a refused start does not use up a session number
+        assertEquals(listOf("begin 1 ON MEDIUM", "begin 1 ON MEDIUM"), audio.calls)
+    }
+
+    @Test
+    fun `a refused sound switch while resting keeps the rest quiet and is not remembered`() {
+        flow.start()
+        audio.refuse = "busy"
+        flow.setSound(SoundMode.ON)
+        assertEquals(SoundMode.QUIET, state.sound)
+        assertEquals("busy", state.notice)
+        assertTrue(saved.none { it.sound == SoundMode.ON })
+
+        runFor(5 * 60_000L) // nothing turns it on later by itself
+        assertEquals(SoundMode.QUIET, state.sound)
+        assertEquals(1, audio.calls.count { it.startsWith("sound") })
+
+        audio.refuse = null
+        flow.setSound(SoundMode.ON)
+        assertEquals(SoundMode.ON, state.sound)
+        assertEquals(SoundMode.ON, saved.last().sound)
+    }
+
+    @Test
+    fun `sound choice and level are remembered from the ready screen`() {
+        flow.setSound(SoundMode.ON)
+        flow.setLevel(SoundLevel.HIGH)
+
+        assertEquals(RestSettings(ONBOARDING_VERSION, SoundMode.ON, SoundLevel.HIGH), saved.last())
+        assertEquals(listOf("level HIGH"), audio.calls)
+        flow.start()
+        assertEquals("begin 1 ON HIGH", audio.calls.last())
+    }
+
+    @Test
+    fun `a permanent audio loss ends the rest once and the audio side hears each end once`() {
+        flow.start()
+        flow.onAudioLost(1)
+        flow.onAudioLost(1)
+        assertEquals(EndReason.AUDIO_LOST, state.ending!!.reason)
+
+        flow.restAgain()
+        flow.start()
+        runFor(25 * 60_000L)
+
+        assertEquals(listOf("end 1 normal=false", "end 2 normal=true"), audio.calls.filter { it.startsWith("end") })
+    }
+
+    @Test
+    fun `a sound failure of the current session makes the rest quiet and keeps the stored choice`() {
+        settings = RestSettings(onboardingVersion = ONBOARDING_VERSION, sound = SoundMode.ON)
+        flow.start()
+
+        flow.onSoundFailed(2, "other session")
+        assertEquals(SoundMode.ON, state.sound)
+
+        flow.onSoundFailed(1, "휴식 소리를 재생하지 못했어요. 조용히 쉬고 있어요")
+        assertEquals(SoundMode.QUIET, state.sound)
+        assertEquals("휴식 소리를 재생하지 못했어요. 조용히 쉬고 있어요", state.notice)
+        assertTrue(saved.isEmpty())
+
+        flow.setSound(SoundMode.ON) // the user can try again
+        assertEquals("sound 1 ON", audio.calls.last())
+    }
+
+    @Test
+    fun `listenTo connects the audio callbacks exactly as the activity uses them`() {
+        val real = RestAudio(
+            scheduler, { 5_000_000 + scheduler.now }, AudioFocusPort { _, _ -> null },
+            object : SoundFactory {
+                override fun restLoop(): SoundPlayer = error("unused")
+                override fun chime(): SoundPlayer = error("unused")
+                override val chimeDurationMs = 0L
+            },
+            { error("unused") }, TtsSlot(),
+        )
+        settings = RestSettings(onboardingVersion = ONBOARDING_VERSION, sound = SoundMode.ON)
+        flow.listenTo(real)
+        flow.start()
+
+        real.onSoundFailed(1, "failed")
+        assertEquals(SoundMode.QUIET, state.sound)
+        real.onFocusLost(1)
+        assertEquals(EndReason.AUDIO_LOST, state.ending!!.reason)
+    }
+
+    @Test
+    fun `a change while the audio is prepared cancels the start and releases the audio`() {
+        audio.duringBegin = { parking = ParkingState(GearState.NOT_PARK, false) }
+        flow.start()
+
+        assertEquals(Screen.READY, state.screen)
+        assertEquals("시작하지 않았어요. ${Block.NOT_PARKED.text}", state.notice)
+        assertEquals(listOf("begin 1 QUIET MEDIUM", "end 1 normal=false"), audio.calls)
+
+        audio.duringBegin = {}
+        parking = parked
+        flow.start()
+        assertEquals(1, state.session!!.id)
     }
 }

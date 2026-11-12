@@ -1,5 +1,11 @@
 package app.commacabin.rest
 
+import app.commacabin.audio.ONBOARDING_VERSION
+import app.commacabin.audio.RestAudio
+import app.commacabin.audio.RestAudioPort
+import app.commacabin.audio.RestSettings
+import app.commacabin.audio.SoundLevel
+import app.commacabin.audio.SoundMode
 import app.commacabin.probe.Cancellable
 import app.commacabin.probe.GearState
 import app.commacabin.probe.ParkingState
@@ -22,6 +28,7 @@ enum class EndReason(val kind: EndKind, val text: String) {
     VEHICLE_UNKNOWN(EndKind.STOPPED, "차량 상태를 확인할 수 없어 휴식을 멈췄어요."),
     DOOR_UNKNOWN(EndKind.STOPPED, "조수석 문 상태를 확인할 수 없어 휴식을 멈췄어요."),
     APP_LEFT(EndKind.STOPPED, "앱 화면을 벗어나 휴식을 멈췄어요."),
+    AUDIO_LOST(EndKind.STOPPED, "다른 소리가 재생돼 휴식을 멈췄어요."),
 }
 
 /** Why a rest cannot start. [endReason] is what the same condition ends a running rest with. */
@@ -76,6 +83,8 @@ data class RestState(
     val zone: ZoneId,
     val parking: ParkingState = ParkingState(),
     val door: DoorState = DoorState(),
+    val sound: SoundMode = SoundMode.QUIET,
+    val level: SoundLevel = SoundLevel.MEDIUM,
     val session: Session? = null,
     val remainingMs: Long = 0,
     val dimmed: Boolean = false,
@@ -91,10 +100,10 @@ data class RestState(
 }
 
 /**
- * Onboarding → ready → resting → ended → ready. Nothing is stored except the onboarding flag, so a new
- * process never resumes a rest. Every session has its own id; a timer or end request for another
- * session, or for a session that already ended, changes nothing. Vehicle state only ends a rest; it
- * never starts one. Main thread only.
+ * Onboarding → ready → resting → ended → ready. Only [RestSettings] are stored, so a new process never
+ * resumes a rest. Every session has its own id; a timer or end request for another session, or for a
+ * session that already ended, changes nothing. Vehicle state only ends a rest; it never starts one.
+ * Main thread only.
  */
 class RestFlow(
     private val scheduler: Scheduler,
@@ -103,8 +112,9 @@ class RestFlow(
     private val zone: () -> ZoneId,
     private val parking: () -> ParkingState,
     private val door: () -> DoorState,
-    onboardingSeen: Boolean,
-    private val markOnboardingSeen: () -> Unit,
+    private var settings: RestSettings,
+    private val saveSettings: (RestSettings) -> Unit,
+    private val audio: RestAudioPort,
     private val log: (String) -> Unit = {},
 ) {
     var state: RestState
@@ -120,18 +130,20 @@ class RestFlow(
     init {
         val now = wallClock()
         state = RestState(
-            screen = if (onboardingSeen) Screen.READY else Screen.ONBOARDING,
+            screen = if (settings.onboardingSeen) Screen.READY else Screen.ONBOARDING,
             pickupMs = RestTime.defaultPickup(now, zone()),
             nowMs = now,
             zone = zone(),
             parking = parking(),
             door = door(),
+            sound = settings.sound,
+            level = settings.level,
         )
     }
 
     fun dismissOnboarding() {
         if (state.screen != Screen.ONBOARDING) return
-        markOnboardingSeen()
+        store(settings.copy(onboardingVersion = ONBOARDING_VERSION))
         val now = wallClock()
         update { copy(screen = Screen.READY, pickupMs = RestTime.defaultPickup(now, zone()), nowMs = now, zone = zone()) }
     }
@@ -155,9 +167,25 @@ class RestFlow(
             update { copy(parking = p, door = d, nowMs = now, notice = "시작하지 않았어요. ${block.text}") }
             return
         }
-        val id = ++sessionSeq
+        val id = sessionSeq + 1
         val elapsed = elapsedClock()
         val session = Session(id, RestTime.restEnd(state.pickupMs), elapsed + restMs)
+        audio.begin(id, session.endElapsedMs, state.sound, state.level)?.let { reason ->
+            log("start refused by audio: $reason")
+            update { copy(parking = p, door = d, nowMs = now, notice = "시작하지 않았어요. $reason") }
+            return
+        }
+        // Final check after the audio preparation: anything that changed meanwhile cancels the start.
+        val p2 = parking()
+        val d2 = door()
+        val late = parkingBlock(p2) ?: doorBlock(d2.status) ?: timeBlock(session.endElapsedMs - elapsedClock())
+        if (late != null) {
+            audio.end(id, normal = false)
+            log("start refused after audio preparation: $late")
+            update { copy(parking = p2, door = d2, nowMs = wallClock(), notice = "시작하지 않았어요. ${late.text}") }
+            return
+        }
+        sessionSeq = id
         lastTouchElapsed = elapsed
         log("session $id start: ${restMs}ms, end wall=${session.endWallMs} elapsed=${session.endElapsedMs}")
         update {
@@ -181,6 +209,47 @@ class RestFlow(
         val s = state.session ?: return
         if (state.screen != Screen.RESTING || state.dimmed) return
         end(s.id, EndReason.USER)
+    }
+
+    /** Ready: just remembered. Resting: turning the sound on needs focus; if refused the rest stays quiet. */
+    fun setSound(sound: SoundMode) {
+        if (sound == state.sound || state.screen == Screen.ONBOARDING) return
+        val s = state.session
+        if (state.screen == Screen.RESTING && s != null) {
+            audio.setSound(s.id, sound)?.let { reason ->
+                log("sound $sound refused: $reason")
+                update { copy(notice = reason) }
+                return
+            }
+        }
+        update { copy(sound = sound, notice = null) }
+        store(settings.copy(sound = sound))
+    }
+
+    fun setLevel(level: SoundLevel) {
+        if (level == state.level || state.screen == Screen.ONBOARDING) return
+        audio.setLevel(level)
+        update { copy(level = level) }
+        store(settings.copy(level = level))
+    }
+
+    /** Permanent audio focus loss of the rest sound. */
+    fun onAudioLost(sessionId: Int) = end(sessionId, EndReason.AUDIO_LOST)
+
+    /**
+     * The rest sound of this session stopped by itself (player failure): the rest goes on quietly and the
+     * reason is shown. The stored choice stays, like a refused switch: only a choice that took effect is stored.
+     */
+    fun onSoundFailed(sessionId: Int, reason: String) {
+        if (state.screen != Screen.RESTING || state.session?.id != sessionId) return log("ignored sound failure of session $sessionId")
+        log("session $sessionId sound failed: $reason")
+        update { copy(sound = SoundMode.QUIET, notice = reason) }
+    }
+
+    /** The callbacks from the audio side that change the flow. MainActivity uses exactly this. */
+    fun listenTo(audio: RestAudio) {
+        audio.onFocusLost = ::onAudioLost
+        audio.onSoundFailed = ::onSoundFailed
     }
 
     fun onParking(p: ParkingState) {
@@ -252,7 +321,13 @@ class RestFlow(
         restTimer = null
         val now = wallClock()
         log("session $id end: $reason")
-        update { copy(screen = Screen.ENDED, ending = Ending(id, reason, now), remainingMs = 0, dimmed = false, nowMs = now) }
+        update { copy(screen = Screen.ENDED, ending = Ending(id, reason, now), remainingMs = 0, dimmed = false, nowMs = now, notice = null) }
+        audio.end(id, normal = reason == EndReason.TIME_UP)
+    }
+
+    private fun store(next: RestSettings) {
+        settings = next
+        saveSettings(next)
     }
 
     private inline fun update(change: RestState.() -> RestState) {

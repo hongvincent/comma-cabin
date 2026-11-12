@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.commacabin.support.RowStatus
 import app.commacabin.support.SupportUiState
+import app.commacabin.support.TTS_TEST_TEXT
 import app.commacabin.support.TtsStatus
 import app.commacabin.support.TtsUiState
 import java.text.SimpleDateFormat
@@ -29,7 +30,14 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
-fun SupportScreen(state: SupportUiState, tts: TtsUiState, onStart: () -> Unit, onStopObserving: () -> Unit, onTtsStart: () -> Unit) {
+fun SupportScreen(
+    state: SupportUiState,
+    tts: TtsUiState,
+    onStart: () -> Unit,
+    onStopObserving: () -> Unit,
+    onTtsStart: () -> Unit,
+    onTtsSpeak: () -> Unit,
+) {
     val format = SimpleDateFormat("HH:mm:ss.SSS", Locale.KOREA)
     Column(
         Modifier
@@ -78,10 +86,13 @@ fun SupportScreen(state: SupportUiState, tts: TtsUiState, onStart: () -> Unit, o
         }
 
         Text("음성 안내(TTS) 초기화 진단", fontSize = 20.sp, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground)
-        Text("ON_DEVICE 초기화와 한국어 설정 요청만 해요. 소리는 내지 않아요.", color = MaterialTheme.colorScheme.onBackground)
+        Text("ON_DEVICE 초기화와 한국어 설정을 요청해요. [한 문장 말하기]를 누를 때만 \"$TTS_TEST_TEXT\"를 한 번 말해요.", color = MaterialTheme.colorScheme.onBackground)
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             Button(onClick = onTtsStart, modifier = Modifier.heightIn(min = 72.dp)) {
                 Text(if (tts.status == TtsStatus.RUNNING) "다시 시도(이전 시도 해제)" else "TTS 초기화 시도", fontSize = 20.sp)
+            }
+            OutlinedButton(onClick = onTtsSpeak, enabled = tts.status == TtsStatus.READY, modifier = Modifier.heightIn(min = 72.dp)) {
+                Text("한 문장 말하기", fontSize = 20.sp)
             }
         }
         Text(

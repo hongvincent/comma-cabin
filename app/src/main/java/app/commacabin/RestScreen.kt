@@ -12,7 +12,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
@@ -28,6 +30,10 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.commacabin.audio.Announce
+import app.commacabin.audio.AudioUi
+import app.commacabin.audio.SoundLevel
+import app.commacabin.audio.SoundMode
 import app.commacabin.rest.Block
 import app.commacabin.rest.EndKind
 import app.commacabin.rest.PREP_MARGIN_MS
@@ -56,12 +62,14 @@ class RestActions(
     val touch: () -> Unit,
     val endByUser: () -> Unit,
     val restAgain: () -> Unit,
+    val setSound: (SoundMode) -> Unit,
+    val setLevel: (SoundLevel) -> Unit,
     /** Debug builds only; never shown while resting. */
     val openDevTools: (() -> Unit)?,
 )
 
 @Composable
-fun RestScreen(state: RestState, actions: RestActions) {
+fun RestScreen(state: RestState, audio: AudioUi, actions: RestActions) {
     Box(
         Modifier
             .fillMaxSize()
@@ -80,14 +88,15 @@ fun RestScreen(state: RestState, actions: RestActions) {
             Modifier
                 .widthIn(max = 1100.dp)
                 .fillMaxWidth()
-                .padding(48.dp),
-            verticalArrangement = Arrangement.spacedBy(28.dp),
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 48.dp, vertical = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp),
         ) {
             when (state.screen) {
                 Screen.ONBOARDING -> Onboarding(actions)
                 Screen.READY -> Ready(state, actions)
-                Screen.RESTING -> if (state.dimmed) DimmedRest(state) else Resting(state, actions)
-                Screen.ENDED -> Ended(state, actions)
+                Screen.RESTING -> if (state.dimmed) DimmedRest(state) else Resting(state, audio, actions)
+                Screen.ENDED -> Ended(state, audio, actions)
             }
         }
         val dev = actions.openDevTools
@@ -106,7 +115,8 @@ private fun Onboarding(actions: RestActions) {
     Column(Modifier.background(Card, RoundedCornerShape(20.dp)).padding(32.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
         Bullet("픽업 시각을 정하면 그 2분 전에 휴식이 끝나요.")
         Bullet("조수석 문이 열리거나, 기어가 P에서 바뀌거나, 앱 화면을 벗어나면 바로 끝나요.")
-        Bullet("쉬는 동안 화면을 어둡게 해요. 소리로 깨워 드리지는 않으니 남은 시간은 화면에서 확인해 주세요.")
+        Bullet("휴식 소리를 켜거나 조용히 쉴 수 있어요. 휴식 소리는 끝나기 1분 전부터 점점 작아져요.")
+        Bullet("제시간에 끝나면 안내음과 음성으로 알려 드려요. 통화 중처럼 다른 소리가 있거나 소리를 낼 수 없으면 화면으로만 알려요. 깨워 드리는 것을 보장하지는 않아요.")
     }
     PrimaryButton("확인했어요", enabled = true, onClick = actions.dismissOnboarding)
 }
@@ -141,12 +151,30 @@ private fun Ready(state: RestState, actions: RestActions) {
         Check(state.doorBlock, "조수석 문 닫힘")
         Check(state.timeBlock, "쉴 시간 충분")
     }
-    PrimaryButton("조용히 쉬기 시작", enabled = state.canStart, onClick = actions.start)
+    SoundChoice(state, actions)
+    PrimaryButton("쉬기 시작", enabled = state.canStart, onClick = actions.start)
     state.notice?.let { Text(it, color = Warn, fontSize = 24.sp) }
 }
 
+/** Rest sound on/quiet and its level. Quiet only turns the rest sound off; the end announcement still plays when possible. */
 @Composable
-private fun Resting(state: RestState, actions: RestActions) {
+private fun SoundChoice(state: RestState, actions: RestActions) {
+    Column(Modifier.background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Toggle("휴식 소리 켬", state.sound == SoundMode.ON) { actions.setSound(SoundMode.ON) }
+            Toggle("조용히", state.sound == SoundMode.QUIET) { actions.setSound(SoundMode.QUIET) }
+            Spacer(Modifier.weight(1f))
+            Text("크기", color = TextSub, fontSize = 22.sp)
+            for ((level, label) in listOf(SoundLevel.LOW to "작게", SoundLevel.MEDIUM to "보통", SoundLevel.HIGH to "크게")) {
+                Toggle(label, state.level == level) { actions.setLevel(level) }
+            }
+        }
+        Text("조용히는 휴식 소리만 꺼요. 제시간에 끝나면 안내음과 음성은 소리를 낼 수 있을 때 나와요.", color = TextSub, fontSize = 20.sp)
+    }
+}
+
+@Composable
+private fun Resting(state: RestState, audio: AudioUi, actions: RestActions) {
     Text(
         if (state.finalMinute) "곧 끝나요" else "쉬는 중",
         color = if (state.finalMinute) Warn else Accent,
@@ -155,6 +183,9 @@ private fun Resting(state: RestState, actions: RestActions) {
     )
     Text(remaining(state.remainingMs), color = TextMain, fontSize = 140.sp, fontWeight = FontWeight.Bold)
     state.session?.let { Text("${clock(it.endWallMs, state.nowMs, state.zone)}에 끝나요", color = TextMain, fontSize = 30.sp) }
+    if (audio.pausedByOther) Text("다른 소리 때문에 휴식 소리를 잠시 멈췄어요", color = Warn, fontSize = 24.sp)
+    SoundChoice(state, actions)
+    state.notice?.let { Text(it, color = Warn, fontSize = 24.sp) }
     Spacer(Modifier.height(8.dp))
     SecondaryButton("휴식 끝내기", wide = true, onClick = actions.endByUser)
     Text("10초 동안 누르지 않으면 화면이 어두워져요. 화면을 누르면 다시 밝아져요.", color = TextSub, fontSize = 22.sp)
@@ -171,7 +202,7 @@ private fun DimmedRest(state: RestState) {
 }
 
 @Composable
-private fun Ended(state: RestState, actions: RestActions) {
+private fun Ended(state: RestState, audio: AudioUi, actions: RestActions) {
     val ending = state.ending ?: return
     Text(
         when (ending.reason.kind) {
@@ -185,6 +216,15 @@ private fun Ended(state: RestState, actions: RestActions) {
     )
     Text(ending.reason.text, color = TextMain, fontSize = 30.sp)
     Text("종료 시각 ${clock(ending.atWallMs, state.nowMs, state.zone)}", color = TextSub, fontSize = 26.sp)
+    if (ending.reason.kind == EndKind.NORMAL) {
+        when (audio.announce) {
+            Announce.RUNNING -> "안내음과 음성으로 알리는 중이에요"
+            Announce.VOICE -> "안내음과 음성으로 알렸어요"
+            Announce.CHIME_ONLY -> "안내음으로 알렸어요. 음성 안내는 하지 못했어요"
+            Announce.SCREEN_ONLY -> "다른 소리가 있거나 소리를 낼 수 없어 화면으로만 알려요"
+            Announce.NONE -> null
+        }?.let { Text(it, color = TextSub, fontSize = 24.sp) }
+    }
     PrimaryButton("다시 쉬기", enabled = true, onClick = actions.restAgain)
 }
 
@@ -220,6 +260,20 @@ private fun Check(block: Block?, okText: String) {
             fontWeight = FontWeight.Bold,
         )
         Text(block?.text ?: okText, color = TextMain, fontSize = 26.sp)
+    }
+}
+
+@Composable
+private fun Toggle(label: String, selected: Boolean, onClick: () -> Unit) {
+    val modifier = Modifier.heightIn(min = 80.dp).widthIn(min = 120.dp)
+    if (selected) {
+        Button(onClick = onClick, modifier = modifier, colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent)) {
+            Text(label, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+        }
+    } else {
+        OutlinedButton(onClick = onClick, modifier = modifier, colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMain)) {
+            Text(label, fontSize = 24.sp)
+        }
     }
 }
 

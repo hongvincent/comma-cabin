@@ -16,6 +16,8 @@ data class DoorState(val status: DoorStatus = DoorStatus.CHECKING, val detail: S
 const val DOOR_AREA = "ROW_1_RIGHT"
 const val DOOR_POLL_MS = 1_000L
 const val DOOR_READ_TIMEOUT_MS = 2_000L
+/** Longer only for the capability check: right after a cold start the Vehicle service may still be binding. */
+const val DOOR_CAPABILITY_TIMEOUT_MS = 5_000L
 const val DOOR_RETRY_MS = 1_000L
 
 /**
@@ -72,7 +74,7 @@ class DoorMonitor(
         // During recovery the error stays on screen until a real answer arrives.
         if (state.status != DoorStatus.ERROR) publish(DoorState(DoorStatus.CHECKING, "generation $gen"))
         val g = gen
-        request<CapabilityResult>(g, "capability", { ok, err -> port.capability(Feature.DOOR_POSITION, ok, err) }) { reply ->
+        request<CapabilityResult>(g, "capability", DOOR_CAPABILITY_TIMEOUT_MS, { ok, err -> port.capability(Feature.DOOR_POSITION, ok, err) }) { reply ->
             when (reply) {
                 is Reply.Ok -> onCapability(g, reply.value)
                 is Reply.Failed ->
@@ -117,7 +119,7 @@ class DoorMonitor(
 
     private fun read(g: Int) {
         val sent = ++stamp
-        request<String?>(g, "read", { ok, err -> port.current(Feature.DOOR_POSITION, DOOR_AREA, ok, err) }) { reply ->
+        request<String?>(g, "read", DOOR_READ_TIMEOUT_MS, { ok, err -> port.current(Feature.DOOR_POSITION, DOOR_AREA, ok, err) }) { reply ->
             when (reply) {
                 is Reply.Ok -> {
                     if (sent < applied) log("ignored read #$sent (${reply.value}): newer update #$applied already applied")
@@ -189,7 +191,7 @@ class DoorMonitor(
     }
 
     /** One answer per request: the first of reply, error or timeout. Anything for an older generation is dropped. */
-    private fun <T> request(g: Int, label: String, call: (ok: (T) -> Unit, err: (ProbeError) -> Unit) -> Unit, done: (Reply<T>) -> Unit) {
+    private fun <T> request(g: Int, label: String, timeoutMs: Long, call: (ok: (T) -> Unit, err: (ProbeError) -> Unit) -> Unit, done: (Reply<T>) -> Unit) {
         var finished = false
         lateinit var timer: Cancellable
         fun finish(reply: Reply<T>) {
@@ -203,7 +205,7 @@ class DoorMonitor(
             }
             done(reply)
         }
-        timer = scheduler.schedule(DOOR_READ_TIMEOUT_MS) { finish(Reply.TimedOut) }
+        timer = scheduler.schedule(timeoutMs) { finish(Reply.TimedOut) }
         pending += timer
         try {
             call({ finish(Reply.Ok(it)) }, { finish(Reply.Failed(it)) })

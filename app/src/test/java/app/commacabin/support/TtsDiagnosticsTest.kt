@@ -1,5 +1,8 @@
 package app.commacabin.support
 
+import app.commacabin.audio.FocusChange
+import app.commacabin.audio.FocusHandle
+import app.commacabin.audio.TtsSlot
 import app.commacabin.probe.FakeScheduler
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -23,6 +26,21 @@ private class FakeEngine(private val throwOnInit: Boolean = false) : TtsEngine {
         localeRequests++
     }
 
+    var events: ((TtsEvent) -> Unit)? = null
+    val spoken = mutableListOf<String>()
+
+    override fun speak(text: String, onEvent: (TtsEvent) -> Unit) {
+        check(releases == 0) { "used after release" }
+        spoken += text
+        events = onEvent
+    }
+
+    var stops = 0
+
+    override fun stop() {
+        stops++
+    }
+
     override fun release() {
         releases++
     }
@@ -32,7 +50,22 @@ class TtsDiagnosticsTest {
     private val scheduler = FakeScheduler()
     private val engines = mutableListOf<FakeEngine>()
     private var nextThrows = false
-    private val tts = TtsDiagnostics({ FakeEngine(nextThrows).also { engines += it } }, scheduler)
+    private val slot = TtsSlot()
+    private var focusHeld = 0
+    private var focusThrows = false
+    private var focusListener: ((FocusChange) -> Unit)? = null
+    private val tts = TtsDiagnostics({ FakeEngine(nextThrows).also { engines += it } }, scheduler, slot, { _, onChange ->
+        if (focusThrows) throw SecurityException("focus")
+        focusListener = onChange
+        focusHeld++
+        FocusHandle { focusHeld-- }
+    })
+
+    private fun ready(): FakeEngine {
+        tts.start()
+        engines.last().ok!!.invoke()
+        return engines.last()
+    }
 
     @Test
     fun `success requests Korean once and says synthesis is not verified`() {
@@ -123,5 +156,84 @@ class TtsDiagnosticsTest {
         assertTrue(tts.state.detail.contains("SecurityException"))
         assertEquals(1, engines.single().releases)
         assertFalse(tts.state.detail.contains("성공"))
+    }
+
+    @Test
+    fun `the test sentence holds app focus until its end event, then the object is released`() {
+        val engine = ready()
+        tts.speakTest()
+        assertEquals(listOf(TTS_TEST_TEXT), engine.spoken)
+        assertEquals(1, focusHeld)
+
+        engine.events!!(TtsEvent.Start)
+        engine.events!!(TtsEvent.Done)
+
+        assertEquals(0, focusHeld)
+        assertEquals(1, engine.releases)
+        assertEquals(0, engine.stops)
+        assertEquals(TtsStatus.IDLE, tts.state.status)
+        assertTrue(tts.state.detail.startsWith("이벤트: Start → Done (RMS 0회)"))
+        tts.speakTest() // no utterance id in SDK events: a new sentence needs a new object
+        assertEquals(1, engine.spoken.size)
+    }
+
+    @Test
+    fun `the rest flow taking the TTS slot stops a running test sentence`() {
+        val engine = ready()
+        tts.speakTest()
+
+        slot.take("rest") {}
+
+        assertEquals(1, engine.stops)
+        assertEquals(1, engine.releases)
+        assertEquals(0, focusHeld)
+        assertEquals(TtsStatus.IDLE, tts.state.status)
+    }
+
+    @Test
+    fun `a focus request that throws means no speech`() {
+        val engine = ready()
+        focusThrows = true
+
+        tts.speakTest()
+
+        assertTrue(engine.spoken.isEmpty())
+        assertEquals(0, focusHeld)
+        assertEquals("앱 오디오 포커스를 얻지 못해 말하지 않았어요", tts.state.detail)
+    }
+
+    @Test
+    fun `focus loss, leaving the screen or no end event stop the test sentence and release the object`() {
+        var engine = ready()
+        tts.speakTest()
+        val late = engine.events!!
+        focusListener!!(FocusChange.LOSS_TRANSIENT)
+        assertEquals(listOf(1, 1, 0), listOf(engine.stops, engine.releases, focusHeld))
+        late(TtsEvent.Done)
+        assertTrue(tts.state.detail.startsWith("오디오 포커스를 잃어 말하기를 멈췄어요"))
+
+        engine = ready()
+        tts.speakTest()
+        tts.stopSpeech()
+        assertEquals(listOf(1, 1, 0), listOf(engine.stops, engine.releases, focusHeld))
+
+        engine = ready()
+        tts.speakTest()
+        scheduler.advance(TTS_SPEAK_TIMEOUT_MS)
+        assertEquals(listOf(1, 1, 0), listOf(engine.stops, engine.releases, focusHeld))
+        late(TtsEvent.Done)
+        assertEquals(TtsStatus.IDLE, tts.state.status)
+    }
+
+    @Test
+    fun `a new attempt stops a running test sentence before releasing its object`() {
+        val engine = ready()
+        tts.speakTest()
+
+        tts.start()
+
+        assertEquals(1, engine.stops)
+        assertEquals(1, engine.releases)
+        assertEquals(0, focusHeld)
     }
 }

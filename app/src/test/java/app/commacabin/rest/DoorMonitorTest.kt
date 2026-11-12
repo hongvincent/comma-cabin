@@ -14,6 +14,9 @@ import org.junit.Test
 private class DoorPort : VehicleReadPort {
     var capability = CapabilityResult(Access.READ_WRITE, listOf(AreaBound("ROW_1_LEFT", "0", "1"), AreaBound(DOOR_AREA, "0", "1")))
     var capabilityError: ProbeError? = null
+    /** When true, capability checks wait in [heldCapability]. */
+    var holdCapability = false
+    val heldCapability = mutableListOf<() -> Unit>()
     var value: String? = "0"
     var readError: ProbeError? = null
     /** When true, reads wait in [heldReads] until the test answers them. */
@@ -26,8 +29,8 @@ private class DoorPort : VehicleReadPort {
     var openSubscriptions = 0
 
     override fun capability(feature: Feature, ok: (CapabilityResult) -> Unit, err: (ProbeError) -> Unit) {
-        capabilityError?.let { return err(it) }
-        ok(capability)
+        val answer = { capabilityError?.let { err(it) } ?: ok(capability) }
+        if (holdCapability) heldCapability += answer else answer()
     }
 
     override fun current(feature: Feature, area: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit) {
@@ -246,5 +249,31 @@ class DoorMonitorTest {
         assertEquals(DoorStatus.CHECKING, status)
         assertEquals(1, port.reads)
         assertNull(seen.firstOrNull { it == DoorStatus.ERROR })
+    }
+
+    @Test
+    fun `the first capability check may take 5 s while value reads keep the 2 s limit`() {
+        port.holdCapability = true
+        monitor.start()
+        scheduler.advance(DOOR_CAPABILITY_TIMEOUT_MS - 1)
+        assertEquals(DoorStatus.CHECKING, status) // still checking: no start, no error yet
+
+        scheduler.advance(1)
+        assertEquals(DoorStatus.ERROR, status)
+
+        scheduler.advance(DOOR_RETRY_MS)
+        port.holdReads = true
+        port.heldCapability.removeAt(port.heldCapability.lastIndex)()
+        scheduler.advance(DOOR_READ_TIMEOUT_MS - 1)
+        assertEquals(DoorStatus.ERROR, status) // the error stays until a real value arrives
+        scheduler.advance(1)
+        assertEquals(DoorStatus.ERROR, status)
+        assertEquals(1, port.reads)
+
+        port.holdReads = false
+        scheduler.advance(DOOR_RETRY_MS)
+        port.heldCapability.removeAt(port.heldCapability.lastIndex)()
+        assertEquals(DoorStatus.CLOSED, status)
+        assertNull(seen.firstOrNull { it == DoorStatus.CLOSED && seen.indexOf(it) < seen.indexOf(DoorStatus.ERROR) })
     }
 }

@@ -24,6 +24,10 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
+import app.commacabin.audio.AudioUi
+import app.commacabin.audio.RestAudio
+import app.commacabin.audio.RestSettings
+import app.commacabin.audio.TtsSlot
 import app.commacabin.probe.AmbientProbe
 import app.commacabin.probe.Cancellable
 import app.commacabin.probe.FileRecoveryStore
@@ -34,6 +38,10 @@ import app.commacabin.rest.DoorMonitor
 import app.commacabin.rest.RestFlow
 import app.commacabin.rest.RestState
 import app.commacabin.rest.Screen
+import app.commacabin.rest.doorBlock
+import app.commacabin.rest.parkingBlock
+import app.commacabin.sdk.AndroidAudioFocus
+import app.commacabin.sdk.AndroidSounds
 import app.commacabin.sdk.CarParkingSource
 import app.commacabin.sdk.PleosLightPort
 import app.commacabin.sdk.PleosTtsEngine
@@ -52,11 +60,15 @@ class MainActivity : ComponentActivity() {
     private val supportTab = mutableStateOf(false)
     private val ttsState = mutableStateOf(TtsUiState())
     private lateinit var restState: MutableState<RestState>
+    private val audioState = mutableStateOf(AudioUi())
     private val devToolsOpen = mutableStateOf(false)
+    /** One TextToSpeech object at a time, shared by the rest announcement and the TTS diagnostic. */
+    private val ttsSlot = TtsSlot()
     private lateinit var vehicle: Vehicle
     private lateinit var parking: CarParkingSource
     private lateinit var door: DoorMonitor
     private lateinit var rest: RestFlow
+    private lateinit var audio: RestAudio
     private lateinit var probe: AmbientProbe
     private lateinit var support: SupportDiagnostics
     private lateinit var tts: TtsDiagnostics
@@ -83,6 +95,17 @@ class MainActivity : ComponentActivity() {
         }
         door = DoorMonitor(readPort, scheduler, { line -> Log.i(DOOR_TAG, line) }) { state -> rest.onDoor(state) }
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        audio = RestAudio(
+            scheduler = scheduler,
+            elapsed = SystemClock::elapsedRealtime,
+            focus = AndroidAudioFocus(this, main),
+            sounds = AndroidSounds(applicationContext),
+            createVoice = { PleosTtsEngine(applicationContext, main) },
+            slot = ttsSlot,
+            log = { line -> Log.i(AUDIO_TAG, line) },
+        )
+        audio.onState = { audioState.value = it }
+        audio.vehicleOk = { parkingBlock(parking.state) == null && doorBlock(door.state.status) == null }
         rest = RestFlow(
             scheduler = scheduler,
             wallClock = System::currentTimeMillis,
@@ -90,10 +113,19 @@ class MainActivity : ComponentActivity() {
             zone = ZoneId::systemDefault,
             parking = { parking.state },
             door = { door.state },
-            onboardingSeen = prefs.getBoolean(KEY_ONBOARDING_SEEN, false),
-            markOnboardingSeen = { prefs.edit().putBoolean(KEY_ONBOARDING_SEEN, true).apply() },
+            settings = RestSettings.from(prefs.all),
+            saveSettings = { s ->
+                prefs.edit()
+                    .remove(RestSettings.KEY_OLD_ONBOARDING)
+                    .putInt(RestSettings.KEY_ONBOARDING, s.onboardingVersion)
+                    .putString(RestSettings.KEY_SOUND, s.sound.name)
+                    .putString(RestSettings.KEY_LEVEL, s.level.name)
+                    .apply()
+            },
+            audio = audio,
             log = { line -> Log.i(REST_TAG, line) },
         )
+        rest.listenTo(audio)
         restState = mutableStateOf(rest.state)
         rest.onState = { state ->
             restState.value = state
@@ -111,7 +143,7 @@ class MainActivity : ComponentActivity() {
         )
         support = SupportDiagnostics(readPort, scheduler, System::currentTimeMillis) { line -> Log.i(SUPPORT_TAG, line) }
         support.onState = { supportState.value = it }
-        tts = TtsDiagnostics({ PleosTtsEngine(applicationContext, main) }, scheduler) { line -> Log.i(TTS_TAG, line) }
+        tts = TtsDiagnostics({ PleosTtsEngine(applicationContext, main) }, scheduler, ttsSlot, AndroidAudioFocus(this, main)) { line -> Log.i(TTS_TAG, line) }
         tts.onState = { ttsState.value = it }
         probe.onState = { uiState.value = it }
         uiState.value = probe.state
@@ -126,13 +158,15 @@ class MainActivity : ComponentActivity() {
             touch = rest::touch,
             endByUser = rest::endByUser,
             restAgain = rest::restAgain,
+            setSound = rest::setSound,
+            setLevel = rest::setLevel,
             openDevTools = if (BuildConfig.DEBUG) ({ devToolsOpen.value = true }) else null,
         )
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 // Development diagnostics are a debug-only side screen and can never be open during a rest.
                 if (!devToolsOpen.value || restState.value.screen == Screen.RESTING) {
-                    RestScreen(restState.value, restActions)
+                    RestScreen(restState.value, audioState.value, restActions)
                 } else {
                     BackHandler { devToolsOpen.value = false }
                     DevTools()
@@ -156,6 +190,7 @@ class MainActivity : ComponentActivity() {
                     onStart = support::startAll,
                     onStopObserving = support::stopObserving,
                     onTtsStart = tts::start,
+                    onTtsSpeak = tts::speakTest,
                 )
             } else {
                 ProbeScreen(
@@ -176,9 +211,14 @@ class MainActivity : ComponentActivity() {
         rest.onVisible()
     }
 
-    /** Ends a running rest first (APP_LEFT), then stops door polling so nothing reads in the background. */
+    /**
+     * Ends a running rest first (APP_LEFT), stops every sound, focus, voice and announcement, then stops door
+     * polling so nothing reads or plays in the background.
+     */
     override fun onStop() {
         rest.onHidden()
+        audio.stopAll()
+        tts.stopSpeech()
         door.stop()
         restoreWindow()
         super.onStop()
@@ -213,6 +253,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
         restoreWindow()
+        audio.stopAll()
         support.close()
         tts.close()
         probe.close()
@@ -227,11 +268,11 @@ class MainActivity : ComponentActivity() {
         const val TTS_TAG = "TtsProbe"
         const val REST_TAG = "RestFlow"
         const val DOOR_TAG = "RestDoor"
+        const val AUDIO_TAG = "RestAudio"
         const val FIRST_READ_DELAY_MS = 1_500L
         const val DIM_WINDOW_BRIGHTNESS = 0.02f
-        /** Only the onboarding flag is stored here. */
+        /** Only [RestSettings] (onboarding version, sound choice and level) are stored here. */
         const val PREFS_NAME = "comma_cabin_rest"
-        const val KEY_ONBOARDING_SEEN = "onboarding_seen"
 
         /** One lease per process: a newer Activity's probe makes any older probe inert. */
         val RECORD_LEASE = RecordLease()
