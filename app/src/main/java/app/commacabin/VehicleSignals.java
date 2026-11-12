@@ -24,7 +24,7 @@ import android.util.Log;
 import java.util.function.Consumer;
 import kotlin.Unit;
 
-/** Read-only vehicle signals. The owning Activity starts and closes the adapter on the main thread. */
+/** Read-only signals on the Activity's main thread. Live door events lead; periodic reads check the SDK connection. */
 final class VehicleSignals implements AutoCloseable {
     enum DoorState { UNKNOWN, CLOSED, OPEN, UNSUPPORTED }
 

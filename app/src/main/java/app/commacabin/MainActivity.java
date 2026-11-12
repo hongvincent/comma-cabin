@@ -166,7 +166,7 @@ public final class MainActivity extends Activity {
         }
         render();
     }
-
+    // Use wall time for the pickup deadline and elapsed time to cap rest if the clock moves back.
     private void applyVehicleAndClock() {
         if (player != null) {
             RestRules.End cause = RestRules.stopCause(Instant.now(), sessionEnd,
