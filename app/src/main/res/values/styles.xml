@@ -1,0 +1,10 @@
+<resources>
+    <style name="CabinTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#A8DDD0</item>
+        <item name="android:windowBackground">#102227</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:statusBarColor">#102227</item>
+        <item name="android:navigationBarColor">#102227</item>
+    </style>
+</resources>
