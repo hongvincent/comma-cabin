@@ -29,6 +29,8 @@ import app.commacabin.audio.AudioUi
 import app.commacabin.audio.RestAudio
 import app.commacabin.audio.RestSettings
 import app.commacabin.audio.TtsSlot
+import app.commacabin.climate.ClimateChoice
+import app.commacabin.climate.ClimateUi
 import app.commacabin.control.ControlBench
 import app.commacabin.control.ControlUiState
 import app.commacabin.control.FileControlStore
@@ -72,11 +74,15 @@ class MainActivity : ComponentActivity() {
     private val audioState = mutableStateOf(AudioUi())
     private val devToolsOpen = mutableStateOf(false)
     private val lightingState = mutableStateOf(LightingUi())
+    private val climateState = mutableStateOf(ClimateUi())
     /** Process-wide owner of the product lighting; never closed by this Activity. */
     private lateinit var cabin: CabinProcess
     /** RestFlow session id (this Activity only) → lighting run id issued by the process-wide owner. */
     private val lightingRuns = mutableMapOf<Int, Int>()
+    /** RestFlow session id (this Activity only) → climate run id issued by the process-wide owner. */
+    private val climateRuns = mutableMapOf<Int, Int>()
     private val lightingListener: (LightingUi) -> Unit = { lightingState.value = it }
+    private val climateListener: (ClimateUi) -> Unit = { climateState.value = it }
     private val debugBusy: () -> String? = { debugBusyReason() }
     /** One TextToSpeech object at a time, shared by the rest announcement and the TTS diagnostic. */
     private val ttsSlot = TtsSlot()
@@ -147,6 +153,9 @@ class MainActivity : ComponentActivity() {
                     .putString(RestSettings.KEY_SOUND, s.sound.name)
                     .putString(RestSettings.KEY_LEVEL, s.level.name)
                     .putBoolean(RestSettings.KEY_LIGHTING, s.lighting)
+                    .putBoolean(RestSettings.KEY_FAN, s.fan)
+                    .putBoolean(RestSettings.KEY_TEMP, s.temp)
+                    .putFloat(RestSettings.KEY_TEMP_C, s.tempC)
                     .apply()
             },
             audio = audio,
@@ -162,12 +171,17 @@ class MainActivity : ComponentActivity() {
         rest.onSessionStarted = { id, on ->
             val run = cabin.lighting.onRestStart(on)
             lightingRuns[id] = run
-            Log.i(REST_TAG, "session $id → lighting run $run (activity ${System.identityHashCode(this)})")
+            val s = rest.state
+            val climateRun = cabin.climate.onRestStart(ClimateChoice(s.fan, s.temp, s.tempC))
+            climateRuns[id] = climateRun
+            Log.i(REST_TAG, "session $id → lighting run $run, climate run $climateRun (activity ${System.identityHashCode(this)})")
         }
         rest.onSessionEnded = { id, reason ->
             val run = lightingRuns.remove(id)
-            Log.i(REST_TAG, "session $id end $reason → lighting run $run")
+            val climateRun = climateRuns.remove(id)
+            Log.i(REST_TAG, "session $id end $reason → lighting run $run, climate run $climateRun")
             run?.let { cabin.lighting.onRestEnd(it, reason.name, parkingLost = reason in PARKING_ENDS) }
+            climateRun?.let { cabin.climate.onRestEnd(it, reason.name, parkingLost = reason in PARKING_ENDS) }
         }
         baseBrightness = window.attributes.screenBrightness
         probe = AmbientProbe(
@@ -178,7 +192,7 @@ class MainActivity : ComponentActivity() {
             clock = System::currentTimeMillis,
             lease = RECORD_LEASE,
             log = { line -> Log.i(TAG, line) },
-            externalBlock = { cabin.lighting.busyReason() },
+            externalBlock = { cabin.productBusy() },
         )
         bench = ControlBench(
             port = PleosControlPort(vehicle, main),
@@ -190,20 +204,30 @@ class MainActivity : ComponentActivity() {
             clock = System::currentTimeMillis,
             lease = CONTROL_LEASE,
             log = { line -> Log.i(CONTROL_TAG, line) },
-            externalBlock = { cabin.lighting.busyReason() },
+            externalBlock = { cabin.productBusy() },
         )
-        bench.onState = { controlState.value = it }
+        bench.onState = {
+            controlState.value = it
+            cabin.debugChanged()
+        }
         support = SupportDiagnostics(readPort, scheduler, System::currentTimeMillis) { line -> Log.i(SUPPORT_TAG, line) }
         support.onState = { supportState.value = it }
         tts = TtsDiagnostics({ PleosTtsEngine(applicationContext, main) }, scheduler, ttsSlot, AndroidAudioFocus(this, main)) { line -> Log.i(TTS_TAG, line) }
         tts.onState = { ttsState.value = it }
-        probe.onState = { uiState.value = it }
+        probe.onState = {
+            uiState.value = it
+            cabin.debugChanged()
+        }
         uiState.value = probe.state
         probe.start()
         bench.start()
         cabin.debugBusy = debugBusy
         cabin.lighting.onState = lightingListener
         lightingState.value = cabin.lighting.state
+        cabin.climate.onState = climateListener
+        climateState.value = cabin.climate.state
+        // The product blocks were computed with the debug tools of before (or none): recompute them with this Activity's.
+        cabin.debugChanged()
         parking.start()
         // "SDK initialized" does not mean the Vehicle service is bound yet, so the first read waits briefly.
         main.postDelayed({ probe.refresh() }, FIRST_READ_DELAY_MS)
@@ -221,13 +245,20 @@ class MainActivity : ComponentActivity() {
             discardLighting = { cabin.lighting.discardRecords() },
             deferLighting = { cabin.lighting.defer() },
             showLighting = { cabin.lighting.showRecords() },
+            setFan = rest::setFan,
+            setTemp = rest::setTemp,
+            setTempC = rest::setTempC,
+            restoreClimate = { cabin.climate.restoreRecords() },
+            discardClimate = { cabin.climate.discardRecords() },
+            deferClimate = { cabin.climate.defer() },
+            showClimate = { cabin.climate.showRecords() },
             openDevTools = if (BuildConfig.DEBUG) ({ devToolsOpen.value = true }) else null,
         )
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 // Development diagnostics are a debug-only side screen and can never be open during a rest.
                 if (!devToolsOpen.value || restState.value.screen == Screen.RESTING) {
-                    RestScreen(restState.value, audioState.value, lightingState.value, restActions)
+                    RestScreen(restState.value, audioState.value, lightingState.value, climateState.value, restActions)
                 } else {
                     BackHandler { devToolsOpen.value = false }
                     DevTools()
@@ -291,6 +322,8 @@ class MainActivity : ComponentActivity() {
         super.onStart()
         door.start()
         rest.onVisible()
+        // Read-only: the driver temperature range and step for the ready screen's ± buttons.
+        if (cabin.climate.state.tempRange == null) cabin.climate.loadTempRange()
         started = true
         syncControlVisibility()
     }
@@ -358,6 +391,7 @@ class MainActivity : ComponentActivity() {
     // The process-wide lighting owner is not closed: its restore goes on with its own Handler and Vehicle.
     override fun onDestroy() {
         if (cabin.lighting.onState === lightingListener) cabin.lighting.onState = {}
+        if (cabin.climate.onState === climateListener) cabin.climate.onState = {}
         if (cabin.debugBusy === debugBusy) cabin.debugBusy = { null }
         main.removeCallbacksAndMessages(null)
         restoreWindow()

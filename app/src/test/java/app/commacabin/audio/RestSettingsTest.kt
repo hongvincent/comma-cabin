@@ -51,4 +51,21 @@ class RestSettingsTest {
         assertFalse(RestSettings.from(mapOf(RestSettings.KEY_LIGHTING to false)).lighting)
         assertTrue(RestSettings.from(mapOf(RestSettings.KEY_LIGHTING to "false")).lighting)
     }
+
+    @Test
+    fun `STEP 9 settings - fan and temperature default on at 22, earlier choices kept, version 3 sees the new onboarding`() {
+        val old = RestSettings.from(mapOf(RestSettings.KEY_ONBOARDING to 3, RestSettings.KEY_SOUND to "ON", RestSettings.KEY_LEVEL to "LOW", RestSettings.KEY_LIGHTING to false))
+        assertEquals(SoundMode.ON, old.sound)
+        assertEquals(SoundLevel.LOW, old.level)
+        assertFalse(old.lighting)
+        assertTrue(old.fan && old.temp)
+        assertEquals(22.0f, old.tempC)
+        assertFalse(old.onboardingSeen)
+
+        val stored = RestSettings.from(mapOf(RestSettings.KEY_FAN to false, RestSettings.KEY_TEMP to false, RestSettings.KEY_TEMP_C to 22.25f))
+        assertFalse(stored.fan || stored.temp)
+        assertEquals(22.25f, stored.tempC)
+        assertEquals(22.0f, RestSettings.from(mapOf(RestSettings.KEY_TEMP_C to Float.NaN)).tempC)
+        assertEquals(22.0f, RestSettings.from(mapOf(RestSettings.KEY_TEMP_C to "22.5")).tempC)
+    }
 }

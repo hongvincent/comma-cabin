@@ -346,6 +346,37 @@ class RestLightingTest {
     }
 
     @Test
+    fun `a debug change only redraws the restore block - on after the first debug read of the next run, off with debug work or records, no vehicle call`() {
+        store.records = listOf(LightRecord("job", LightProp.BRIGHTNESS, FIVE, 70, 30, LightStage.APPLY_CONFIRMED, "req", 30, responseReceived = true))
+        port.values[LightProp.BRIGHTNESS to FIVE] = 30
+        val block = "개발 진단 작업이나 기록이 남아 있어 되돌릴 수 없어요"
+        debug = "밝기 검증 작업이 진행 중이에요" // the new Activity's first debug read, still answering
+        assertEquals(block, lighting.state.restoreBlock)
+        val calls = port.calls
+        val saves = store.saves
+
+        debug = null // the read answered
+        lighting.onDebugChanged()
+        assertNull(lighting.state.restoreBlock)
+        debug = "제어 검증 작업이 진행 중이에요"
+        lighting.onDebugChanged()
+        assertEquals(block, lighting.state.restoreBlock)
+        lighting.restoreRecords() // the press is checked again
+        debug = null
+        lighting.onDebugChanged()
+        scheduler.advance(60_000)
+        assertNull(lighting.state.restoreBlock)
+        assertEquals(calls, port.calls) // no read, no write, no automatic restore
+        assertEquals(saves, store.saves)
+        assertEquals(LightStage.APPLY_CONFIRMED, record(LightProp.BRIGHTNESS).stage)
+
+        lighting.restoreRecords()
+        assertEquals(70, port.writes.single().value)
+        answer(port.writes.single())
+        assertTrue(store.records.isEmpty())
+    }
+
+    @Test
     fun `debug work or records block applying and an explicit restore`() {
         debug = "밝기 검증 기록이 남아 있어요"
         lighting.onRestStart(true)

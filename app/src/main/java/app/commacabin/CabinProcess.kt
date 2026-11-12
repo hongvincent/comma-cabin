@@ -5,6 +5,9 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import app.commacabin.climate.FileClimateStore
+import app.commacabin.climate.RestClimate
+import app.commacabin.climate.SdkClimatePort
 import app.commacabin.control.ControlLoad
 import app.commacabin.control.FileControlStore
 import app.commacabin.lighting.FileLightStore
@@ -53,11 +56,35 @@ class CabinProcess private constructor(context: Context) {
         log = { line -> Log.i(TAG, line) },
     )
 
+    /** Product climate: the same lifetime, Handler, Vehicle and parking source as the lighting; an independent owner. */
+    val climate: RestClimate = RestClimate(
+        port = SdkClimatePort(PleosControlPort(vehicle, main)),
+        store = FileClimateStore(File(files, FileClimateStore.FILE_NAME)),
+        scheduler = scheduler,
+        parking = { parking.state },
+        debugBlock = { debugBusy() ?: debugFiles() },
+        lease = RecordLease(),
+        log = { line -> Log.i(CLIMATE_TAG, line) },
+    )
+
     init {
-        parking = CarParkingSource(context.applicationContext, main) { lighting.onParking(it) }
+        parking = CarParkingSource(context.applicationContext, main) { state ->
+            lighting.onParking(state)
+            climate.onParking(state)
+        }
         lighting.start()
+        climate.start()
         parking.start()
     }
+
+    /** The live Activity's debug tools changed (work, records, errors): the product screens show the current blocks. Display only. */
+    fun debugChanged() {
+        lighting.onDebugChanged()
+        climate.onDebugChanged()
+    }
+
+    /** For the debug write tools: product lighting or climate busy or holding records. Lighting and climate never block each other. */
+    fun productBusy(): String? = lighting.busyReason() ?: climate.busyReason()
 
     /** Debug record files (also damaged ones) block product lighting even when no Activity holds them. */
     private fun debugFiles(): String? = when {
@@ -68,6 +95,7 @@ class CabinProcess private constructor(context: Context) {
 
     companion object {
         private const val TAG = "RestLighting"
+        private const val CLIMATE_TAG = "RestClimate"
         private var instance: CabinProcess? = null
 
         /** Main thread only. */

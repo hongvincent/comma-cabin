@@ -132,6 +132,11 @@ class RestLighting(
         observers.clear()
     }
 
+    /** The debug tools' work, records or errors changed: recompute the shown blocks only. No vehicle read or write, no restore, no file change. */
+    fun onDebugChanged() {
+        if (alive) publish()
+    }
+
     /** Losing parking cancels the preparation and remembers every open job of this process (see [parkLost]). */
     fun onParking(next: ParkingState) {
         if (!next.parked) parkingLost("주차 조건 상실(${next.gear}, 주행 제한 ${next.uxRestricted})")

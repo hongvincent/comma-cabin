@@ -86,6 +86,9 @@ data class RestState(
     val sound: SoundMode = SoundMode.QUIET,
     val level: SoundLevel = SoundLevel.MEDIUM,
     val lighting: Boolean = true,
+    val fan: Boolean = true,
+    val temp: Boolean = true,
+    val tempC: Float = 22.0f,
     val session: Session? = null,
     val remainingMs: Long = 0,
     val dimmed: Boolean = false,
@@ -146,6 +149,9 @@ class RestFlow(
             sound = settings.sound,
             level = settings.level,
             lighting = settings.lighting,
+            fan = settings.fan,
+            temp = settings.temp,
+            tempC = settings.tempC,
         )
     }
 
@@ -248,6 +254,27 @@ class RestFlow(
         if (on == state.lighting || state.screen == Screen.ONBOARDING || state.screen == Screen.RESTING) return
         update { copy(lighting = on) }
         store(settings.copy(lighting = on))
+    }
+
+    /** [바람 줄이기] on/off: only remembered. */
+    fun setFan(on: Boolean) {
+        if (on == state.fan || state.screen == Screen.ONBOARDING || state.screen == Screen.RESTING) return
+        update { copy(fan = on) }
+        store(settings.copy(fan = on))
+    }
+
+    /** [운전석 온도 맞추기] on/off: only remembered. */
+    fun setTemp(on: Boolean) {
+        if (on == state.temp || state.screen == Screen.ONBOARDING || state.screen == Screen.RESTING) return
+        update { copy(temp = on) }
+        store(settings.copy(temp = on))
+    }
+
+    /** The chosen °C: only remembered; the vehicle range and step are checked at the next start. */
+    fun setTempC(value: Float) {
+        if (!value.isFinite() || value == state.tempC || state.screen == Screen.ONBOARDING || state.screen == Screen.RESTING) return
+        update { copy(tempC = value) }
+        store(settings.copy(tempC = value))
     }
 
     fun setLevel(level: SoundLevel) {

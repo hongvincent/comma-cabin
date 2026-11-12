@@ -524,4 +524,23 @@ class RestFlowTest {
         flow.setSound(SoundMode.QUIET)
         assertEquals(1, saved.size)
     }
+
+    @Test
+    fun `climate choices are only remembered on the ready screen and carried by the state at the start`() {
+        flow.setFan(false)
+        flow.setTempC(22.25f)
+        flow.setTempC(Float.NaN)
+        assertEquals(false, saved.last().fan)
+        assertEquals(22.25f, saved.last().tempC)
+        assertTrue(audio.calls.isEmpty())
+
+        var seen: RestState? = null
+        flow.onSessionStarted = { _, _ -> seen = flow.state }
+        flow.start()
+        flow.setTemp(false) // not while resting
+        assertEquals(false, seen!!.fan)
+        assertEquals(true, seen!!.temp)
+        assertEquals(22.25f, seen!!.tempC)
+        assertTrue(state.temp)
+    }
 }
