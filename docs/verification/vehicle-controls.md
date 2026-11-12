@@ -79,6 +79,35 @@
 - 부수 효과: 이동 명령마다 차량 홈 화면에 시스템 좌석 위치 미니 앱(`SEAT_POSITION`)이 떴다(관찰).
 - 시험 복구 코드는 이번 1회만을 위한 경로라 실행 뒤 제거했다(최종 소스에 없음). 재현 절차: 기록 유지 → 새 요청 ID·응답 없음 저장 → BACKWARD → 1초 watchdog 또는 안전 조건에서만 STOP(위치 0으로 멈추지 않음) → 두 종료 콜백 뒤 `responseReceived=true`, 단계 유지 → SDK 재조회 + Console `seat.positions.recline.driver`·`moves`·`actuator.active_count` + VHAL `Recline is`/`Stopped` 로그 대조.
 
+#### 4-1-1. STEP 13 재검증: 가상 위치 설정과 SDK 조회 (2026-11-13, 이동 명령 없음)
+
+위 STEP 7 기록은 그대로 두고, 같은 AVD(이미지 2.1.0)에서 위치를 직접 설정해 다시 확인한 결과만 덧붙인다.
+
+- **설정 경로**:
+  - Console catalog의 `seat-backrest-position` 항목이 정확한 계약을 갖고 있다. 이 항목은 `visible:false`다. 계약 내용: "Publish normalized seat position", `%`, 0~100 step 1, `PUT /vehicle/seat`, `kind=position`, `control=recline`, `value`, `area=driver`, `SEAT_BACKREST_ANGLE_1_POS`.
+  - 이 계약 그대로 운전석 위치를 emulator 전용 fixture로 설정했다. Console 브리지가 꺼져 있으면 `503 emulator_inactive`가 나오므로, 먼저 Console 프런트엔드에 정의된 로컬 세션 API로 활성화했다.
+  - 차량 설정 앱 > 시트 > 시트 조정에는 부위별 방향 조정(이동형), 운전자 프리셋 1·2, 릴랙션 컴포트가 있다. 숫자 위치 입력은 없다. 누르지 않았다.
+  - CarService 셸 조회·주입은 user 빌드라 쓸 수 없었다. 에뮬레이터 Extended Controls > Car data는 확인하지 않았다.
+- **결과**:
+
+| Console 입력 | Console 표시 | VHAL 로그(`sdv_vhal_rust`) | 공개 SDK getter | 공개 SDK 리스너 |
+| --- | --- | --- | --- | --- |
+| 원래값 | 0 | — | 0 | 등록 직후 0 |
+| 25 | 25 | `Recline is 0.25, revised position: 0` | 0 | 이벤트 없음 |
+| 50 | 50 | `Recline is 0.5, revised position: 0` | 0 | 이벤트 없음 |
+| 100 | 100 | `Recline is 1, revised position: 0.01` | 0 | 이벤트 없음 |
+| 0(원복) | 0 | `Recline is 0, revised position: 0` | 0 | 이벤트 없음 |
+
+- **판단**:
+  - 가상 위치는 Console에서 설정되고 DDS로 게시됐다. 시트 위치가 가상값이라는 점과, 공개 SDK 읽기가 0이라는 점은 별개다.
+  - 관측된 흐름은 100% → raw 1 → revised 0.01 → SDK 0이다. 그래서 Console/DDS → VHAL 사이의 단위 환산과 정수화 단계에 문제가 있다고 **강하게 의심된다**. 정확한 변환 구현(수식)은 읽지 않았으므로 **미확인**이다.
+  - 시험한 0·25·50·100%에서 SDK 값은 모두 0이었다. 최대 입력에서도 0이었으므로, 이동 시간만 늘리면 해결된다고 볼 근거는 없다.
+  - SDK 라이브러리 자체의 결함으로 단정하지 않는다. 로그로 확인한 범위는 다음뿐이다: VHAL의 revised 값이 0.01 이하였고, SDK getter·서비스 로그의 값이 0이었다.
+- **대안 후보(미검증)**:
+  - 설치된 SDK에는 `selectSeatMemory(SeatArea, Int, onFailed)`와 `checkSeatMemoryCapabilities`가 있다. 차량 설정 앱에는 운전자 프리셋 1·2가 있다.
+  - capability 조회, 실제 호출, 프리셋 저장·복귀 계약은 확인하지 않았다. 이 경로가 구현 불가하다고 정하지 않는다.
+- 증거: `app/build/reports/seat-recheck/`(`logs/f0~f10`, `docs/official-docs-summary.md`), 보고 `app/build/reports/pm-live/step13-report.md`.
+
 ### 4-2. 무드등 색
 
 1. 정상 차량 설정 앱 라이트 > 무드 조명 [켜기] → SDK 스위치 ON.
