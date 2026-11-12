@@ -4,7 +4,7 @@
 - 기준일: 2026-11-12
 - 요구사항 표기: **[확정]** 사용자·Codex·공식 공지로 정해진 것 / **[제안]** 이 문서의 제안
 - 근거 표기: **문서 확인** 공식 문서에서 읽음 / **실행 확인** 이번 작업에서 직접 실행함 / **미확인** 확인하지 못함
-- 실행 확인은 STEP 3 앰비언트 밝기 검증([verification/ambient-brightness.md](verification/ambient-brightness.md))에서 확인한 항목에만 표시한다. 나머지는 문서 확인 상태다.
+- 실행 확인은 STEP 3 앰비언트 밝기 검증([verification/ambient-brightness.md](verification/ambient-brightness.md))과 STEP 4 차량 지원 진단([verification/vehicle-support.md](verification/vehicle-support.md))에서 확인한 항목에만 표시한다. 나머지는 문서 확인 상태다.
 
 ## 0. 확정 사항과 일정
 
@@ -159,7 +159,7 @@
 
 | ID | 기능 | 구분 | 필요한 이유 | 완료 조건 | 현재 구현 가능성 |
 | --- | --- | --- | --- | --- | --- |
-| F1 | 쉬어도 되는 상태 확인 | 기능 [확정], 세부 [제안] | 주차 중에만 쉬어야 안전하고, 시작이 안 되는 이유를 알아야 한다 | 기어(P↔D), 주행 제한(on/off), 조수석 문(열림↔닫힘)을 바꾸면 2초 안에 체크와 시작 버튼이 바뀐다. 문 미지원·확인 중·오류는 시작 불가와 각각의 이유로 표시된다 | 문서 확인(문·주행 제한), 표준 API 계약 확인(기어). 에뮬레이터 실행 미확인 |
+| F1 | 쉬어도 되는 상태 확인 | 기능 [확정], 세부 [제안] | 주차 중에만 쉬어야 안전하고, 시작이 안 되는 이유를 알아야 한다 | 기어(P↔D), 주행 제한(on/off), 조수석 문(열림↔닫힘)을 바꾸면 2초 안에 체크와 시작 버튼이 바뀐다. 문 미지원·확인 중·오류는 시작 불가와 각각의 이유로 표시된다 | 문서 확인(문·주행 제한), 표준 API 계약 확인(기어). 에뮬레이터에서 문 조회·구독(열림↔닫힘)은 **실행 확인**(STEP 4), 기어·주행 제한 반영은 **실행 확인**(STEP 3). 시작 조건 화면은 미구현 |
 | F2 | 휴식 종료 시각 정하기 | 시간 값은 초기 검증값 [확정], 나머지 [제안] | 언제 끝나는지 알아야 눈을 감는다 | ±5분 조정 시 종료 시각과 쉴 수 있는 시간이 바로 바뀐다. 3분 미만이면 시작 불가와 이유. 자정을 넘는 픽업도 맞게 계산 | Android 표준 기능. 차량 API 불필요 |
 | F3 | 휴식 소리와 크기 | 조용히 정의 [확정], 나머지 [제안] | 쉬는 방식이 사람마다 다르다 | 켬/조용히, 크기 3단계, 휴식 중 변경 즉시 반영, 다시 열어도 유지 | Android 표준 기능. 실행 미확인 |
 | F4 | 쉬는 동안의 화면 | 10초는 초기 검증값 [확정], 나머지 [제안] | 밝은 화면은 휴식을 방해한다 | 10초 뒤 어두워짐, 누르면 10초 동안 조작 표시 | Android 표준 기능 |
@@ -168,10 +168,10 @@
 | F7 | 잠깐 끼어드는 소리 처리 | [확정] | 내비 안내 한 번에 휴식이 끝나면 안 된다 | 5장 재개 조건을 모두 만족할 때만 재개. 종료된 세션은 늦게 온 콜백으로 재생하지 않는다 | Android 표준 기능. 실행 미확인 |
 | F8 | 다시 쉬기와 설정 기억 | [제안] | 동승자가 늦으면 다시 쉬고 싶다 | 2-5대로 동작 | Android 표준 기능 |
 | F9 | 첫 실행 안내 | [제안] | 언제 끝나고 무엇이 바뀌는지 알아야 믿고 쓴다 | 처음 한 번만 2-1 안내를 보여 준다 | Android 표준 기능 |
-| F10 | 음성 안내 | 기능 [확정], 문구 [제안] | 눈을 감은 사람에게 안내음보다 분명하다 | 정상 종료 때 포커스를 얻으면 "픽업 2분 전이에요"를 말한다. 실패하면 5장 대체 동작 | 문서 확인. 에뮬레이터 동작 미확인 |
-| F11 | 편한 자세 (운전석 등받이) | 기능 [확정], 이동량은 실행 검증 후 결정 | 운전 자세로는 쉬기 어렵다 | 6-2 계약과 6-6 상황별 처리가 모두 동작 | 문서 확인(방향 제어만 제공). Virtual Console 카드 없음, 에뮬레이터 재현 방법 미확인 |
-| F12 | 무드등 (밝기 낮춤, 따뜻한 색) | 기능 [확정], 값은 실행 검증 후 결정 | 운전용 조명은 쉬기에 밝다 | 6-3 계약과 6-6 상황별 처리가 영역별로 동작 | 문서 확인. Console 카드 있음(밝기 0~100%, 색 4종). 실제 요구 권한 미확인 |
-| F13 | 공조 (바람 줄이기, 사용자가 고른 온도) | 기능 [확정], 풍량 값은 실행 검증 후 결정 | 바람 소리와 온도가 휴식을 방해할 수 있다 | 6-4(풍량), 6-5(온도) 계약과 6-6 상황별 처리가 영역별로 동작 | 문서 확인. Console 카드 있음(풍량 0~8, 목표 온도 16~30°C) |
+| F10 | 음성 안내 | 기능 [확정], 문구 [제안] | 눈을 감은 사람에게 안내음보다 분명하다 | 정상 종료 때 포커스를 얻으면 "픽업 2분 전이에요"를 말한다. 실패하면 5장 대체 동작 | 문서 확인. `ON_DEVICE` 초기화와 한국어 설정 요청은 **실행 확인**(STEP 4 보완, SDK가 넣는 INTERNET 권한은 병합 규칙으로 제거). 실제 합성·재생·포커스는 미확인 |
+| F11 | 편한 자세 (운전석 등받이) | 기능 [확정], 이동량은 실행 검증 후 결정 | 운전 자세로는 쉬기 어렵다 | 6-2 계약과 6-6 상황별 처리가 모두 동작 | 문서 확인(방향 제어만 제공). 위치·이동 지원 조회는 **실행 확인**(STEP 4: 4좌석 READ_WRITE, 위치 0~100, 운전석 0). Virtual Console 카드 없음. 실제 이동은 미시험 |
+| F12 | 무드등 (밝기 낮춤, 따뜻한 색) | 기능 [확정], 값은 실행 검증 후 결정 | 운전용 조명은 쉬기에 밝다 | 6-3 계약과 6-6 상황별 처리가 영역별로 동작 | 문서 확인. Console 카드 있음(밝기 0~100%, 색 4종). 밝기 설정과 권한은 **실행 확인**(STEP 3). 색 지원·현재값 조회는 **실행 확인**(STEP 4: 다섯 좌석 묶음 1개, `0x00FFFFFF`). 색 설정은 미시험 |
+| F13 | 공조 (바람 줄이기, 사용자가 고른 온도) | 기능 [확정], 풍량 값은 실행 검증 후 결정 | 바람 소리와 온도가 휴식을 방해할 수 있다 | 6-4(풍량), 6-5(온도) 계약과 6-6 상황별 처리가 영역별로 동작 | 문서 확인. Console 카드 있음(풍량 0~8, 목표 온도 16~30°C). 조회는 **실행 확인**(STEP 4: 풍량 1~8, 목표 온도 운전석·조수석 각 15.0~30.0°C, 0.5°C 간격)이며 카드 표기와 범위가 다르다. 설정은 미시험 |
 | F14 | 차량 연동 복원과 결과 표시 | [확정] | 끝나면 차가 원래대로 돌아와야 믿고 쓴다 | 종료 종류별로 6-1 규칙대로 동작한다. 실패·결과 불명을 성공이나 원복 완료로 표시하지 않는다. 종료 화면에 항목별 상태와 원래 값이 나온다 | F11–F13과 같음 |
 | F15 | 복원 기록과 다음 실행 안내 | [확정] | 강제 종료 등으로 되돌리지 못해도 기록이 남아야 한다 | 모든 차량 변경 명령 전에 기록을 저장하고(저장 실패면 쓰지 않음), 2-5대로 안내한다. [나중에]는 기록을 남기고 [기록 지우기]만 기록을 지운다 | Android 표준 저장 + F11–F13 API |
 
@@ -466,9 +466,9 @@ Pleos 주의 분산 가이드에 따라 큰 터치 영역, 높은 대비, 짧은
 
 | 기능 | 공모전에서 허용하는 범위 | 에뮬레이터에서 동작하는 범위 | 실제 차량·App Market 출시 조건 |
 | --- | --- | --- | --- |
-| Vehicle SDK 조회 (문, 등받이 위치, 앰비언트, 공조) | 허용(공개 문서 SDK) | 앰비언트 지원 확인·스위치·밝기 조회는 **실행 확인**(STEP 3: 운전석을 포함한 영역 1개 = 다섯 좌석 묶음, 범위 0~100, 스위치 OFF, 밝기 100). 그 밖의 조회는 실행 미확인. Virtual Console 카드: 문 위치, 앰비언트 밝기·색(4종), 공조 전원·풍량·온도는 있음. **등받이 위치 카드는 없음**(재현 방법 미확인, 불가로 결론 내리지 않음) | Vehicle State SDK는 신청 없이 사용 가능. 단 "Vehicle SDK 퍼미션은 Pleos App Market과 사전 협의 및 승인된 경우에만 선언할 수 있습니다."([심사 가이드][p-review], [My Project][p-project]) 지원은 모델마다 다르므로 capability로 확인 |
+| Vehicle SDK 조회 (문, 등받이 위치, 앰비언트, 공조) | 허용(공개 문서 SDK) | 앰비언트 지원 확인·스위치·밝기 조회는 **실행 확인**(STEP 3: 운전석을 포함한 영역 1개 = 다섯 좌석 묶음, 범위 0~100, 스위치 OFF, 밝기 100). 문 위치·등받이 위치·등받이 이동 지원·공조(전원·자동·듀얼·풍량·온도)·앰비언트 색 조회와 문·등받이 구독도 **실행 확인**(STEP 4: 모두 READ_WRITE. 영역·범위는 [verification/vehicle-support.md](verification/vehicle-support.md)). Virtual Console 카드: 문 위치, 앰비언트 밝기·색(4종), 공조 전원·풍량·온도는 있음. **등받이 위치 카드는 없음**. 카드가 없어도 SDK는 등받이 위치(0~100)와 이동 지원을 응답했다(STEP 4) | Vehicle State SDK는 신청 없이 사용 가능. 단 "Vehicle SDK 퍼미션은 Pleos App Market과 사전 협의 및 승인된 경우에만 선언할 수 있습니다."([심사 가이드][p-review], [My Project][p-project]) 지원은 모델마다 다르므로 capability로 확인 |
 | Vehicle SDK 제어 (등받이 이동, 앰비언트·풍량·온도 설정) | 허용. "준비 중"이어도 문서대로 에뮬레이터에서 개발·시험 가능([개발 범위 공지][notice-scope]) | 앰비언트 밝기 설정은 **실행 확인**(STEP 3 보완: 정상 UI로 스위치 ON 뒤 100→80 적용, 사용자 변경 90, 앱 원복 100. `onComplete`·재조회·Virtual Console 일치). 등받이·풍량·온도 설정은 실행 미확인 | Vehicle Control SDK는 [My Project][p-project]에서 "준비 중"(현재 신청 불가). 출시하려면 사전 승인 필요 |
-| TextToSpeech | 허용 | 실행 미확인 | My Project에서 "준비 중". `ON_DEVICE`는 앱 등록이 필요 없음 |
+| TextToSpeech | 허용 | `Mode.ON_DEVICE` 초기화 성공은 **실행 확인**(STEP 4 보완: 2회, 각 0.18초). 이어서 `setLocale(Locale.KOREA)`를 요청했고 서비스 로그에 수신·저장이 남았다. 실제 합성·재생은 미확인. SDK 3.3.1과 의존성이 선언하는 `android.permission.INTERNET`은 `tools:node="remove"`로 제거했다(병합 매니페스트·APK에 없음). 서비스 `ai.pleos.playground.caas` 4.2.10, `TTS_SERVICE`는 normal 권한 | My Project에서 "준비 중". `ON_DEVICE`는 앱 등록이 필요 없음 |
 | 기어 (AAOS 표준) | 허용. Pleos는 AAOS 표준이 있으면 그것을 쓰라고 함 | **실행 확인**(STEP 3): Virtual Console 기어 Park↔Drive가 `GEAR_SELECTION`으로 앱에 반영됨 | Android 표준 계약: 차량별 지원 기어는 configArray로 확인 |
 | 주행 제한 (AAOS 표준) | 허용 | 기어 Drive에서 `isRequiresDistractionOptimization()` = true 반영은 **실행 확인**(STEP 3). 문서의 adb `cmd hmg_car_service …` 명령은 이 이미지에서 `Can't find service`(exit 20)로 실패해 규제 단독 재현은 미실행 | DO 미선언 앱은 "Drive(주행): 사용 불가" |
 | 오디오 (Android 표준) | 허용 | 실행 미확인 | Music/Audio 카테고리로 출시하면 `MediaBrowserService` 필수 |
@@ -481,30 +481,30 @@ Pleos 주의 분산 가이드에 따라 큰 터치 영역, 높은 대비, 짧은
 | --- | --- | --- | --- | --- | --- |
 | 기어 P | `CarPropertyManager` + `VehiclePropertyIds.GEAR_SELECTION`, 값 `VehicleGear.GEAR_PARK` | `Car.PERMISSION_POWERTRAIN` (`android.car.permission.CAR_POWERTRAIN`). Pleos 샘플 앱 매니페스트에는 `pleos.car.permission.CAR_POWERTRAIN`도 있음 | Android: "Normal permission Car.PERMISSION_POWERTRAIN to read property.", `VEHICLE_PROPERTY_ACCESS_READ`, `CHANGE_MODE_ONCHANGE`, "configArray represents the list of supported gears". Pleos: "AAOS 표준에 이미 존재하는 경우… 중복 기능을 제공하지 않습니다." | [Android GEAR_SELECTION][a-gear], [Pleos SDK API 정책][p-api-policy] | 표준 API 계약 문서 확인. Pleos 에뮬레이터에서 **실행 확인**(STEP 3) |
 | 주행 제한 | `CarUxRestrictionsManager.registerListener`, `onUxRestrictionsChanged`, `CarUxRestrictions.isRequiresDistractionOptimization()` | Pleos 문서에 없음 | 북미 외 지역은 5 km/h 이하에서 Auto Hold도 정차로 인정해 D에서도 규제가 풀릴 수 있다 → 기어를 따로 확인 | [주행 규제 개발][p-drive-dev], [해제 조건][p-drive-release], [주행 규제 정책][p-drive-policy] | 문서 확인(권한 미확인). Pleos 에뮬레이터에서 기어 Drive와 함께 반영되는 것은 **실행 확인**(STEP 3) |
-| 조수석 문 | `Door.checkDoorPositionCapabilities`, `getCurrentDoorPosition(DoorArea(DoorValue.ROW_1_RIGHT), onComplete: (Int?), onFailed)`, `registerDoorPosition(area, DoorPositionListener)` / `unregisterDoorPosition` | `pleos.car.permission.CAR_DOORS` | "Min is typically 0 for fully closed." 최대값은 차량마다 다르므로 capability의 min/max로 판단 | [getCurrentDoorPosition][p-door-get], [setDoorPosition 설명][p-door-set] | 문서 확인. 이전 프로토 기록에 문 열림 종료 흔적 있음(이번 미재현) |
+| 조수석 문 | `Door.checkDoorPositionCapabilities`, `getCurrentDoorPosition(DoorArea(DoorValue.ROW_1_RIGHT), onComplete: (Int?), onFailed)`, `registerDoorPosition(area, DoorPositionListener)` / `unregisterDoorPosition` | `pleos.car.permission.CAR_DOORS` | "Min is typically 0 for fully closed." 최대값은 차량마다 다르므로 capability의 min/max로 판단 | [getCurrentDoorPosition][p-door-get], [setDoorPosition 설명][p-door-set] | 문서 확인. 조회·구독과 열림↔닫힘 반영은 **실행 확인**(STEP 4: 범위 0~1, 닫힘 0, 열림 1) |
 
 ### 7-3. 그 밖의 API
 
 | 기능 | API | 권한 | 근거 | 상태 |
 | --- | --- | --- | --- | --- |
 | 지원 여부 확인 | `checkXxxCapabilities`, `CapabilityConfig.accessType`(NONE/READ/WRITE/READ_WRITE), `AreaBounds(min, max)` | 각 API 권한 | [Capability][p-cap], [권한][p-perm] | 문서 확인 |
-| 시트·조명·공조 | 6-2~6-5 표 | 6-2~6-5 표 | [moveSeatBackrestAngle][p-seat], [setAmbientLightBrightness][p-light], [setHvacFanSpeed][p-fan], [setHvacTemperature][p-temp] | 문서 확인, 실행 미확인 |
-| 음성 안내 | `ai.pleos.playground.tts.TextToSpeech(context, Mode.ON_DEVICE)`, `initialize()`, `setLocale(Locale.KOREA)`, `speak(text)`, `stop()`, `release()`. `ON_DEVICE`: "네트워크 연결이 필요하지 않으며… 앱 등록이 필요하지 않습니다." 기본값 `HYBRID`는 서버 우선이라 쓰지 않음 | `pleos.car.permission.TTS_SERVICE` | [TTS 소개][p-tts], [언어 설정][p-tts-locale] | 문서 확인. 에뮬레이터 동작·포커스 처리 미확인 |
+| 시트·조명·공조 | 6-2~6-5 표 | 6-2~6-5 표 | [moveSeatBackrestAngle][p-seat], [setAmbientLightBrightness][p-light], [setHvacFanSpeed][p-fan], [setHvacTemperature][p-temp] | 문서 확인. 조회는 **실행 확인**(STEP 4), 앰비언트 밝기 설정은 **실행 확인**(STEP 3). 등받이 이동·색·풍량·온도 설정은 실행 미확인 |
+| 음성 안내 | `ai.pleos.playground.tts.TextToSpeech(context, Mode.ON_DEVICE)`, `initialize()`, `setLocale(Locale.KOREA)`, `speak(text)`, `stop()`, `release()`. `ON_DEVICE`: "네트워크 연결이 필요하지 않으며… 앱 등록이 필요하지 않습니다." 기본값 `HYBRID`는 서버 우선이라 쓰지 않음 | `pleos.car.permission.TTS_SERVICE` | [TTS 소개][p-tts], [언어 설정][p-tts-locale] | 문서 확인. `ON_DEVICE` 초기화·한국어 설정 요청은 **실행 확인**(STEP 4 보완). 합성·재생·포커스 처리는 미확인 |
 | 휴식 소리·안내음 | Android `MediaPlayer`, `AudioManager.requestAudioFocus(AudioFocusRequest)` | 없음 | [오디오 포커스][p-audio], [Suspend][p-suspend], [Music/Audio][p-music] | 문서 확인 |
 | 쉬는 화면 밝기 | Android `WindowManager.LayoutParams.screenBrightness` (앱 창에만 적용) | 없음 | [Android 문서][a-brightness] | Android 표준 |
 | SDK·에뮬레이터 | Maven `https://nexus-playground.pleos.ai/repository/maven-releases/`, `ai.pleos.playground:Vehicle:2.3.2`, `ai.pleos.playground:TextToSpeech:3.3.1`, minSdk 28. Pleos Connect Emulator 2.1.0, API 34, cold boot 필수 | — | [Vehicle 설정][p-setup], [릴리스 노트][p-release], [에뮬레이터][p-emu], [Virtual Console][p-vc] | 문서 확인 |
 
 ### 7-4. 남은 기술적 미확인 사항 (검증 순서대로)
 
-1. 차량 제어 API: 앰비언트 밝기 설정과 요구 권한(`CAR_LIGHTS` + `CONTROL_CAR_LIGHTS`)은 STEP 3 보완에서 실행 확인. 등받이·풍량·온도 설정은 미확인
+1. 차량 제어 API: 앰비언트 밝기 설정과 요구 권한(`CAR_LIGHTS` + `CONTROL_CAR_LIGHTS`)은 STEP 3 보완에서 실행 확인. 등받이·색·풍량·온도 설정은 미확인. 색 현재값의 alpha가 `0x00`이었고(STEP 4), set 문서는 alpha를 `0xFF` 고정으로 적는다
 2. 앰비언트 스위치: 정상 차량 설정 UI(라이트 > 무드 조명 [켜기]/[끄기])로 바꾸면 SDK `getAmbientLightSwitch`도 ON/OFF로 따라온다(실행 확인). Virtual Console의 숨김 항목 `ambient_light.mode`는 차량 스위치와 무관하게 On으로 남는다. Virtual Console을 처음 열면 콘솔 값(앰비언트 밝기 100% 등)이 차량에 발행됐다(관찰). 기어 P 읽기는 실행 확인됨
-3. 시트: 등받이 카드가 없는 에뮬레이터에서 이동·위치를 확인할 방법, 방향 부호·단위·초과 이동
-4. 풍량·온도 변경이 공조 자동 모드·전원에 주는 영향, 온도 선택 간격(`incrementCelsius`)과 듀얼 영역 동기화
+3. 시트: 위치 조회(0~100)와 이동 지원은 STEP 4에서 실행 확인. 실제 이동으로 위치가 바뀌는지, 방향 부호·단위·초과 이동은 미확인
+4. 풍량·온도 변경이 공조 자동 모드·전원에 주는 영향, 듀얼 영역 동기화. 온도 선택 간격(`incrementCelsius`)은 0.5°C로 조회됨(STEP 4)
 5. 쓰기 응답 시간(타임아웃 기준), 타임아웃 뒤 늦은 응답·반영이 실제로 오는지. 요청 취소, 처리 순서, 종료 콜백 뒤 값 불변은 문서에 없음
-6. TextToSpeech의 에뮬레이터 동작과 오디오 포커스 처리 주체
+6. TextToSpeech의 실제 한국어 합성·재생과 오디오 포커스 처리 주체. `ON_DEVICE` 초기화와 한국어 설정 요청은 STEP 4 보완에서 실행 확인(INTERNET 권한 없이)
 7. 화면을 벗어난 뒤 복원을 끝까지 마칠 수 있는지
 8. `CarUxRestrictionsManager` 사용 권한
-9. 문 상태 초기 "확인 중" 지연 원인
+9. 문 상태 초기 "확인 중" 지연: STEP 4에서 직접 조회는 앱 시작 약 5초 뒤에도 열린 문을 바로 `1`로 줬다. 새 프로세스의 첫 문 구독 알림은 등록 1.6~1.8초 뒤에 왔고, STEP 4 보완에서는 첫 알림이 아예 오지 않은 경우도 있었다. 따라서 시작 조건은 직접 조회값으로 정하고, 구독은 변화 감지에만 쓴다. 직접 조회를 쓰면 문을 여닫아야 풀리는 멈춤은 재현되지 않았다. 앱 표시 직후 3초 안의 조회는 측정하지 못했다
 
 ## 8. 데이터와 콘텐츠 [제안]
 

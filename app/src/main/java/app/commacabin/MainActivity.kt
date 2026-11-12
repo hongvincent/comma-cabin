@@ -7,6 +7,16 @@ import android.os.Looper
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Text
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.mutableStateOf
@@ -18,14 +28,25 @@ import app.commacabin.probe.RecordLease
 import app.commacabin.probe.Scheduler
 import app.commacabin.sdk.CarParkingSource
 import app.commacabin.sdk.PleosLightPort
+import app.commacabin.sdk.PleosTtsEngine
+import app.commacabin.sdk.PleosVehicleReadPort
+import app.commacabin.support.SupportDiagnostics
+import app.commacabin.support.SupportUiState
+import app.commacabin.support.TtsDiagnostics
+import app.commacabin.support.TtsUiState
 import java.io.File
 
 class MainActivity : ComponentActivity() {
     private val main = Handler(Looper.getMainLooper())
     private val uiState = mutableStateOf(ProbeUiState())
+    private val supportState = mutableStateOf(SupportUiState())
+    private val supportTab = mutableStateOf(false)
+    private val ttsState = mutableStateOf(TtsUiState())
     private lateinit var vehicle: Vehicle
     private lateinit var parking: CarParkingSource
     private lateinit var probe: AmbientProbe
+    private lateinit var support: SupportDiagnostics
+    private lateinit var tts: TtsDiagnostics
 
     private val scheduler = object : Scheduler {
         override fun schedule(delayMs: Long, task: () -> Unit): Cancellable {
@@ -49,6 +70,10 @@ class MainActivity : ComponentActivity() {
             lease = RECORD_LEASE,
             log = { line -> Log.i(TAG, line) },
         )
+        support = SupportDiagnostics(PleosVehicleReadPort(vehicle, main), scheduler, System::currentTimeMillis) { line -> Log.i(SUPPORT_TAG, line) }
+        support.onState = { supportState.value = it }
+        tts = TtsDiagnostics({ PleosTtsEngine(applicationContext, main) }, scheduler) { line -> Log.i(TTS_TAG, line) }
+        tts.onState = { ttsState.value = it }
         probe.onState = { uiState.value = it }
         uiState.value = probe.state
         probe.start()
@@ -57,13 +82,29 @@ class MainActivity : ComponentActivity() {
         main.postDelayed({ probe.refresh() }, FIRST_READ_DELAY_MS)
         setContent {
             MaterialTheme(colorScheme = darkColorScheme()) {
-                ProbeScreen(
-                    state = uiState.value,
-                    onStart = probe::startChange,
-                    onRestore = probe::restore,
-                    onDiscard = probe::discardRecord,
-                    onRefresh = probe::refresh,
-                )
+                Column {
+                    Row(Modifier.padding(start = 24.dp, top = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                        TabButton("밝기 검증", selected = !supportTab.value) { supportTab.value = false }
+                        TabButton("지원 진단(읽기 전용)", selected = supportTab.value) { supportTab.value = true }
+                    }
+                    if (supportTab.value) {
+                        SupportScreen(
+                            state = supportState.value,
+                            tts = ttsState.value,
+                            onStart = support::startAll,
+                            onStopObserving = support::stopObserving,
+                            onTtsStart = tts::start,
+                        )
+                    } else {
+                        ProbeScreen(
+                            state = uiState.value,
+                            onStart = probe::startChange,
+                            onRestore = probe::restore,
+                            onDiscard = probe::discardRecord,
+                            onRefresh = probe::refresh,
+                        )
+                    }
+                }
             }
         }
     }
@@ -71,6 +112,8 @@ class MainActivity : ComponentActivity() {
     // The probe is closed first so no late SDK callback can touch the record after this Activity is gone.
     override fun onDestroy() {
         main.removeCallbacksAndMessages(null)
+        support.close()
+        tts.close()
         probe.close()
         parking.close()
         vehicle.release()
@@ -79,9 +122,20 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         const val TAG = "AmbientProbe"
+        const val SUPPORT_TAG = "VehicleSupport"
+        const val TTS_TAG = "TtsProbe"
         const val FIRST_READ_DELAY_MS = 1_500L
 
         /** One lease per process: a newer Activity's probe makes any older probe inert. */
         val RECORD_LEASE = RecordLease()
+    }
+}
+
+@androidx.compose.runtime.Composable
+private fun TabButton(label: String, selected: Boolean, onClick: () -> Unit) {
+    if (selected) {
+        Button(onClick = onClick) { Text(label, fontSize = 20.sp) }
+    } else {
+        OutlinedButton(onClick = onClick) { Text(label, fontSize = 20.sp) }
     }
 }

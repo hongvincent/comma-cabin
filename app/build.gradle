@@ -41,6 +41,8 @@ dependencies {
     implementation "androidx.compose.material3:material3"
     implementation "androidx.activity:activity-compose:1.9.3"
     implementation "ai.pleos.playground:Vehicle:2.3.2"
+    // ON_DEVICE only. The AAR's INTERNET permission is removed in AndroidManifest.xml.
+    implementation "ai.pleos.playground:TextToSpeech:3.3.1"
 
     testImplementation "junit:junit:4.13.2"
     // org.json is built into Android but stubbed in JVM unit tests.
