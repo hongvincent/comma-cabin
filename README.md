@@ -2,7 +2,7 @@
 
 픽업 장소에 일찍 도착한 운전자가 주차한 차에서 빗소리를 들으며 쉬는 Pleos Connect 앱입니다. **19:30 픽업이라면 19:28에 빗소리를 끕니다. 조수석 문이 먼저 열리면 그때 바로 멈춥니다.**
 
-[서명된 APK 받기](https://github.com/hongvincent/comma-cabin/releases/tag/v0.1.0) · [설치와 실행](#설치와-실행) · [에뮬레이터 검증 기록](docs/verification.md)
+[서명된 APK 받기](https://github.com/hongvincent/comma-cabin/releases/tag/v0.2.0) · [설치와 실행](#설치와-실행) · [에뮬레이터 검증 기록](docs/verification.md)
 
 ## Pleos에서 확인한 화면
 
@@ -10,19 +10,26 @@
 
 [![Pleos 실제 시작 화면. P 기어, 조수석 문 닫힘, 픽업 19:30, 휴식 종료 예정 19:28](docs/images/pleos-ready.png)](docs/images/pleos-ready-full.png)
 
+<details>
+<summary>빗소리 재생 중 화면</summary>
+
+[![Pleos 실제 재생 화면. 빗소리 재생 중, 남은 휴식, 하단의 휴식 끝내기 버튼](docs/images/pleos-playing.png)](docs/images/pleos-playing-full.png)
+
+</details>
+
 | 픽업 2분 전 종료 | 조수석 문 열림으로 종료 |
 | --- | --- |
-| [![19:28:00 종료 화면. 픽업 준비 시간이에요, 빗소리 꺼짐](docs/images/pleos-deadline.png)](docs/images/pleos-deadline-full.png) | [![19:26:58 종료 화면. 조수석 문이 열렸어요, 빗소리 꺼짐](docs/images/pleos-door.png)](docs/images/pleos-door-full.png) |
-| 문을 닫아 둔 시험에서 **19:28:00**에 재생을 멈췄습니다. | 문을 먼저 연 시험에서 **19:26:58**에 재생을 멈췄습니다. |
+| [![19:28:00 종료 화면. 픽업 준비할 시간이에요, 빗소리 꺼짐](docs/images/pleos-deadline.png)](docs/images/pleos-deadline-full.png) | [![19:26:54 종료 화면. 조수석 문이 열렸어요, 빗소리 꺼짐](docs/images/pleos-door.png)](docs/images/pleos-door-full.png) |
+| 문을 닫아 둔 시험에서 **19:28:00**에 재생을 멈췄습니다. | 문을 먼저 연 시험에서 **19:26:54**에 재생을 멈췄습니다. |
 
-설치한 release APK의 Pleos 에뮬레이터 화면에서 상태와 시각이 있는 부분을 잘라 배열했습니다. 이미지를 누르면 해당 화면의 전체 캡처를 볼 수 있습니다. 재생과 정지는 [MediaPlayer 로그](docs/verification.md#실측-결과)로 확인했습니다.
+설치한 release APK의 Pleos 에뮬레이터 캡처에서 앱 영역을 잘라 보여 줍니다. 이미지를 누르면 전체 화면을 볼 수 있습니다. 재생과 정지는 [MediaPlayer 로그](docs/verification.md#실측-결과)로 확인했습니다.
 
 ## 설치와 실행
 
 | 항목 | 값 |
 | --- | --- |
-| 앱 | `app.commacabin` · v0.1.0 · 서명된 release APK |
-| 설치 파일 | [GitHub Release v0.1.0](https://github.com/hongvincent/comma-cabin/releases/tag/v0.1.0) · [저장소의 APK](apk/쉼표캐빈_쉼표캐빈_release.apk) |
+| 앱 | `app.commacabin` · v0.2.0 · 서명된 release APK |
+| 설치 파일 | [GitHub Release v0.2.0](https://github.com/hongvincent/comma-cabin/releases/tag/v0.2.0) · [저장소의 APK](apk/쉼표캐빈_쉼표캐빈_release.apk) |
 | 검증 환경 | Pleos Connect Emulator **2.1.0** · Android Automotive OS **API 34** · arm64-v8a |
 | 디스플레이 | **2560 × 1440** · 160 dpi |
 | SDK | Pleos Vehicle SDK **2.3.2** |
@@ -42,7 +49,7 @@ adb -e shell am start -n app.commacabin/.MainActivity
 
 | 경로 | 입력 | 확인할 결과 |
 | --- | --- | --- |
-| 예정 종료 | 조수석 문을 닫은 채 픽업 2분 전까지 기다립니다. | 빗소리가 꺼지고 **픽업 준비 시간이에요**가 표시됩니다. |
+| 예정 종료 | 조수석 문을 닫은 채 픽업 2분 전까지 기다립니다. | 빗소리가 꺼지고 **픽업 준비할 시간이에요**가 표시됩니다. |
 | 조기 종료 | 예정 시각 전에 Virtual Console에서 오른쪽 앞문을 **Open**으로 바꿉니다. | 빗소리가 꺼지고 **조수석 문이 열렸어요**가 표시됩니다. 문을 닫은 뒤에도 자동으로 재생되지 않습니다. |
 | 주행 준비 | 휴식 중 P 기어를 D로 바꿉니다. | 빗소리가 꺼집니다. P로 돌아와도 자동으로 재생되지 않습니다. |
 
@@ -59,9 +66,15 @@ adb -e logcat -v threadtime -s CommaCabin:I CabinVehicle:I
 | 조수석 문 | Pleos Vehicle SDK `Door` · `ROW_1_RIGHT` | 오른쪽 앞문 상태를 조회하고 변경을 구독합니다. 닫힘이 확인될 때만 시작하고, 문이 열리거나 문 신호가 끊기면 종료합니다. |
 | 기어와 주행 제한 | Android Automotive `GEAR_SELECTION` · `CarUxRestrictionsManager` | P 기어에서 화면 사용이 허용될 때 시작합니다. P를 벗어나거나 주행 제한이 걸리면 종료합니다. |
 | 앰비언트 조명 밝기 | Pleos Vehicle SDK `Light` | 지원 좌석의 밝기 값을 읽으며 운전석을 우선합니다. 휴식 중 앱 창의 밝기에 반영하고, 지원 값이 없으면 시스템 밝기를 사용합니다. |
-| 빗소리와 오디오 포커스 | Android `MediaPlayer` · `AudioManager` | 내장 빗소리를 미디어 경로로 반복 재생합니다. 오디오 포커스를 잃거나 앱 화면을 떠나면 종료합니다. |
+| 빗소리와 오디오 포커스 | Android `MediaPlayer` · `AudioManager` | 앞유리에 떨어지는 빗소리의 현장 녹음을 미디어 경로로 반복 재생합니다. 오디오 포커스를 잃거나 앱 화면을 떠나면 종료합니다. [음원 출처와 편집 내역](docs/audio.md) |
 
 픽업 시각은 앱에서 직접 설정합니다. 현재 구현 범위는 차량 상태 읽기, 앱 화면 밝기, 미디어 재생입니다. 차량 조명 제어, 서라운드 채널 제어, 내비게이션과 픽업 서비스 연동은 후속 범위입니다. 실차 동작은 별도 검증이 필요합니다.
+
+## 화면과 조작
+
+휴식 상태와 두 시각을 크게 보여 주고, 빗소리가 멈추면 종료 이유와 시각을 함께 표시합니다. 어두운 배경의 빛은 정적으로 표시합니다. 화면이 좁을 때는 본문을 세로로 배치하고 시작·종료와 시각 변경 버튼을 하단에 둡니다.
+
+두 버튼의 높이는 최소 **80 dp**입니다. 160 dpi 에뮬레이터에서 **휴식 시작**의 실제 터치 영역은 **346 × 80 px**였습니다. 휴식 중에는 **휴식 끝내기**를 한 번 누르면 종료됩니다. 픽업 시각 변경은 주차 상태에서 화면 사용이 허용되고 빗소리가 꺼져 있을 때 사용할 수 있습니다. [Pleos UI 디자인 가이드](https://document.pleos.ai/docs/connect/guide/docs-design/Introduction/intro) · [주행 안전을 고려한 설계](https://document.pleos.ai/docs/pleos-only/vehicle-app-planning-guide/driver-distraction-guideline)
 
 ## 소스 빌드
 
@@ -81,3 +94,4 @@ JDK 17, Android SDK Platform 34, Build Tools 35.0.0을 준비합니다. SDK에 `
 | [MainActivity.java](app/src/main/java/app/commacabin/MainActivity.java) · [CabinScreen.java](app/src/main/java/app/commacabin/CabinScreen.java) | 재생과 정지, 시각 설정, 차량용 화면 |
 | [checks/run.sh](checks/run.sh) | Android 없이 실행하는 종료 규칙 검사 |
 | [docs/verification.md](docs/verification.md) | 에뮬레이터 실측 시각, 로그, 재현 절차와 APK SHA-256 |
+| [docs/audio.md](docs/audio.md) | 빗소리 녹음의 출처, 라이선스와 루프 편집 내역 |

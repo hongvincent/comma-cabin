@@ -2,6 +2,7 @@ package app.commacabin;
 
 import android.app.Activity;
 import android.app.TimePickerDialog;
+import android.content.DialogInterface;
 import android.media.AudioAttributes;
 import android.media.AudioFocusRequest;
 import android.media.AudioManager;
@@ -12,6 +13,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.WindowManager;
+import android.widget.Button;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -44,7 +46,9 @@ public final class MainActivity extends Activity {
     private VehicleSignals.State signals = NO_SIGNALS;
     private AudioManager audio;
     private AudioFocusRequest focus;
+    private Object focusOwner;
     private MediaPlayer player;
+    private TimePickerDialog timePicker;
     private LocalTime pickup = LocalTime.of(19, 30);
     private Instant sessionEnd;
     private long sessionElapsedLimit;
@@ -79,6 +83,7 @@ public final class MainActivity extends Activity {
                         + " uxAllows=" + state.drivingAllowed() + " door=" + state.door());
             }
             signals = state;
+            if (!canEditPickupTime() && timePicker != null) timePicker.dismiss();
             applyVehicleAndClock();
         });
         vehicle.start();
@@ -92,6 +97,7 @@ public final class MainActivity extends Activity {
 
     @Override protected void onStop() {
         visible = false;
+        if (timePicker != null) timePicker.dismiss();
         main.removeCallbacks(tick);
         if (vehicle != null) {
             vehicle.close();
@@ -102,14 +108,28 @@ public final class MainActivity extends Activity {
     }
 
     private void chooseTime() {
-        if (player != null || !signals.parked() || !signals.drivingAllowed()) return;
-        new TimePickerDialog(this, (view, hour, minute) -> {
+        if (!canEditPickupTime() || timePicker != null) return;
+        TimePickerDialog dialog = new TimePickerDialog(this, (view, hour, minute) -> {
+            if (!canEditPickupTime()) return;
             pickup = LocalTime.of(hour, minute);
             stopReason = null;
             stoppedAt = null;
             audioUnavailable = false;
             render();
-        }, pickup.getHour(), pickup.getMinute(), true).show();
+        }, pickup.getHour(), pickup.getMinute(), true);
+        dialog.setOnDismissListener(ignored -> timePicker = null);
+        timePicker = dialog;
+        dialog.show();
+        int target = Math.round(76 * getResources().getDisplayMetrics().density);
+        for (int which : new int[]{DialogInterface.BUTTON_NEGATIVE, DialogInterface.BUTTON_POSITIVE}) {
+            Button button = dialog.getButton(which);
+            button.setMinHeight(target);
+            button.setMinWidth(target);
+        }
+    }
+
+    private boolean canEditPickupTime() {
+        return visible && player == null && signals.parked() && signals.drivingAllowed();
     }
 
     private RestRules.Door door() {
@@ -132,11 +152,12 @@ public final class MainActivity extends Activity {
         stopReason = null;
         stoppedAt = null;
         audioUnavailable = false;
+        Object owner = new Object();
         AudioFocusRequest requested = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(RAIN)
                 .setWillPauseWhenDucked(true)
                 .setOnAudioFocusChangeListener(change -> {
-                    if (change < 0) stopRest(RestRules.End.AUDIO_INTERRUPTED);
+                    if (change < 0 && focusOwner == owner) stopRest(RestRules.End.AUDIO_INTERRUPTED);
                 }, main)
                 .build();
         if (audio == null || audio.requestAudioFocus(requested) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
@@ -145,6 +166,7 @@ public final class MainActivity extends Activity {
             return;
         }
         focus = requested;
+        focusOwner = owner;
         try {
             player = MediaPlayer.create(this, R.raw.rain, RAIN, AudioManager.AUDIO_SESSION_ID_GENERATE);
             if (player == null) throw new IllegalStateException("Rain asset did not open");
@@ -202,6 +224,7 @@ public final class MainActivity extends Activity {
             }
         }
         if (focus != null) {
+            focusOwner = null;
             audio.abandonAudioFocusRequest(focus);
             focus = null;
         }
@@ -222,31 +245,31 @@ public final class MainActivity extends Activity {
         String detail;
         if (playing) {
             headline = "잠깐 쉬어가세요";
-            detail = "픽업 2분 전이나 조수석 문이 열릴 때 빗소리를 끕니다.";
+            detail = "픽업 2분 전이나 조수석 문이 열리면 빗소리가 멈춰요.";
         } else if (audioUnavailable) {
             headline = "빗소리를 재생할 수 없어요";
             detail = "다른 오디오가 끝난 뒤 다시 시작해 주세요.";
         } else if (stopReason != null) {
             headline = switch (stopReason) {
-                case DEADLINE -> "픽업 준비 시간이에요";
+                case DEADLINE -> "픽업 준비할 시간이에요";
                 case PASSENGER_DOOR -> "조수석 문이 열렸어요";
                 case DRIVE_RESTRICTION -> "주행 준비로 휴식을 끝냈어요";
                 case SIGNAL_LOST -> "차량 신호를 확인할 수 없어요";
                 case BACKGROUND, MANUAL, AUDIO_INTERRUPTED -> "휴식을 끝냈어요";
             };
-            detail = "종료 " + CLOCK.format(stoppedAt.atZone(zone)) + " · 빗소리를 껐어요.";
+            detail = CLOCK.format(stoppedAt.atZone(zone)) + "에 빗소리를 껐어요.";
         } else if (!signals.parked() || !signals.drivingAllowed()) {
-            headline = "주차한 뒤 시작해 주세요";
-            detail = "P 기어와 화면 사용 가능 상태를 확인하고 있어요.";
+            headline = "차를 주차해 주세요";
+            detail = "P 기어에서 휴식을 시작할 수 있어요.";
         } else if (door() != RestRules.Door.CLOSED) {
             headline = door() == RestRules.Door.OPEN ? "조수석 문을 닫아 주세요" : "조수석 문 상태를 확인하고 있어요";
-            detail = "조수석 문이 닫힌 상태를 확인하면 시작할 수 있어요.";
+            detail = "문이 닫힌 상태에서 시작할 수 있어요.";
         } else if (!RestRules.enoughTime(now, end)) {
             headline = "휴식 시간이 부족해요";
-            detail = "픽업까지 3분 이상 남았을 때 시작할 수 있어요.";
+            detail = "픽업까지 3분 이상 남아야 시작할 수 있어요.";
         } else {
             headline = "픽업까지 잠깐 쉬어요";
-            detail = "픽업 2분 전에 빗소리를 끄고 준비 시간을 남겨요.";
+            detail = "픽업 2분 전에 빗소리가 멈춰요.";
         }
         String doorText = switch (door()) {
             case CLOSED -> "닫힘";
@@ -258,7 +281,7 @@ public final class MainActivity extends Activity {
         String countdown = String.format(Locale.KOREA, "%02d:%02d", remaining / 60, remaining % 60);
         screen.show(new CabinScreen.Model(pickup.format(TIME), TIME.format(end.atZone(zone)),
                 CLOCK.format(now.atZone(zone)), signals.parked() ? "P" : "P 확인 안 됨", doorText,
-                headline, detail, countdown, playing, canStart, signals.ambientBrightness()));
+                headline, detail, countdown, playing, canStart, signals.ambientBrightness(), canEditPickupTime()));
         float brightness = playing && signals.ambientBrightness() != null
                 ? 0.20f + 0.25f * (Math.max(0, Math.min(100, signals.ambientBrightness())) / 100f)
                 : WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE;
