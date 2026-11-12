@@ -67,5 +67,15 @@ class RestSettingsTest {
         assertEquals(22.25f, stored.tempC)
         assertEquals(22.0f, RestSettings.from(mapOf(RestSettings.KEY_TEMP_C to Float.NaN)).tempC)
         assertEquals(22.0f, RestSettings.from(mapOf(RestSettings.KEY_TEMP_C to "22.5")).tempC)
+
+        // STEP 10: a version 4 user sees the shorter text once; every stored choice stays.
+        val v4 = RestSettings.from(
+            mapOf(
+                RestSettings.KEY_ONBOARDING to 4, RestSettings.KEY_SOUND to "ON", RestSettings.KEY_LEVEL to "HIGH", RestSettings.KEY_LIGHTING to false,
+                RestSettings.KEY_FAN to false, RestSettings.KEY_TEMP to true, RestSettings.KEY_TEMP_C to 23.5f,
+            ),
+        )
+        assertFalse(v4.onboardingSeen)
+        assertEquals(RestSettings(4, SoundMode.ON, SoundLevel.HIGH, lighting = false, fan = false, temp = true, tempC = 23.5f), v4)
     }
 }

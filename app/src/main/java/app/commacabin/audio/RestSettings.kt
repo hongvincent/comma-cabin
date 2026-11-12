@@ -2,9 +2,10 @@ package app.commacabin.audio
 
 /**
  * Bumped when the onboarding text changes, so everyone sees the new version once. 1 = silent STEP 5 text,
- * 2 = rest sound and announcements (STEP 6), 3 = mood lighting (STEP 8), 4 = climate (STEP 9).
+ * 2 = rest sound and announcements (STEP 6), 3 = mood lighting (STEP 8), 4 = climate (STEP 9),
+ * 5 = shorter text with the seat not adjusted yet (STEP 10).
  */
-const val ONBOARDING_VERSION = 4
+const val ONBOARDING_VERSION = 5
 
 /** The only stored values: onboarding version, sound choice and level, mood lighting on/off. No pickup or usage history. */
 data class RestSettings(

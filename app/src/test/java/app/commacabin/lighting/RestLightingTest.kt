@@ -489,6 +489,8 @@ class RestLightingTest {
         assertEquals(3, port.writes.size) // color: the current value cannot be read, so nothing is sent
         assertEquals(LightStage.RESTORE_HELD, record(LightProp.COLOR).stage)
         assertTrue(store.records.none { it.prop == LightProp.BRIGHTNESS })
+        assertEquals("현재 값을 읽지 못해 되돌리지 않았어요", lighting.state.items.single { it.prop == LightProp.COLOR }.text) // the SDK error stays in the log
+        assertTrue(log.any { it.contains("read failed") })
 
         port.failReads.clear()
         lighting.restoreRecords()

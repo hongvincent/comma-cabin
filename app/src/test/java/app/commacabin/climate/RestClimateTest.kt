@@ -232,6 +232,18 @@ class RestClimateTest {
     }
 
     @Test
+    fun `an SDK error stays in the log - the screen gets the reason in words`() {
+        port.caps[ClimateProp.TEMP] = null
+        climate.loadTempRange()
+        assertEquals("운전석 온도 범위를 확인하지 못했어요", climate.state.tempRangeProblem)
+        port.failValues += ClimateProp.FAN
+        climate.onRestStart(both.copy(temp = false))
+        assertTrue(port.writes.isEmpty())
+        assertEquals("현재 값을 읽지 못해 바꾸지 않았어요", climate.state.items.single { it.prop == ClimateProp.FAN }.text)
+        assertTrue(log.any { it.startsWith("현재 값을 읽지 못해 바꾸지 않았어요 — 원인:") && it.contains("read failed") })
+    }
+
+    @Test
     fun `a failed last read keeps the record`() {
         val run = climate.onRestStart(both.copy(temp = false))
         answer(port.writes[0])

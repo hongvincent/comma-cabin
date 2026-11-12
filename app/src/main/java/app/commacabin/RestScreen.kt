@@ -3,7 +3,9 @@ package app.commacabin
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -24,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -98,10 +101,11 @@ class RestActions(
 
 @Composable
 fun RestScreen(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions) {
+    val dim = state.screen == Screen.RESTING && state.dimmed
     Box(
         Modifier
             .fillMaxSize()
-            .background(if (state.screen == Screen.RESTING && state.dimmed) Color.Black else Background)
+            .background(if (dim) Color.Black else Background)
             // Watches every press without consuming it, so a touch both counts as activity and wakes a dim screen.
             .pointerInput(Unit) {
                 awaitPointerEventScope {
@@ -110,99 +114,183 @@ fun RestScreen(state: RestState, audio: AudioUi, lighting: LightingUi, climate: 
                     }
                 }
             },
-        contentAlignment = Alignment.Center,
     ) {
+        if (dim) {
+            // No control at all: the first touch only wakes the screen.
+            DimmedRest(state)
+        } else {
+            // A new screen starts at its top, never at the scroll position of the screen before.
+            key(state.screen) {
+                val scroll = rememberScrollState()
+                Column(Modifier.fillMaxSize()) {
+                    BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+                        val wide = maxWidth >= WIDE_MIN
+                        // Only the ready and end screens use two columns; reading text stays at a comfortable width.
+                        val twoColumns = wide && (state.screen == Screen.READY || state.screen == Screen.ENDED)
+                        Column(
+                            Modifier
+                                .widthIn(max = if (twoColumns) 1600.dp else 1100.dp)
+                                .fillMaxWidth()
+                                .verticalScroll(scroll)
+                                .padding(horizontal = 48.dp, vertical = 32.dp),
+                            verticalArrangement = Arrangement.spacedBy(24.dp),
+                        ) {
+                            when (state.screen) {
+                                Screen.ONBOARDING -> Onboarding()
+                                Screen.READY -> Ready(state, lighting, climate, actions, twoColumns)
+                                Screen.RESTING -> Resting(state, audio, lighting, climate, actions)
+                                Screen.ENDED -> Ended(state, audio, lighting, climate, actions, twoColumns)
+                            }
+                        }
+                    }
+                    BottomBar(state, actions)
+                }
+            }
+        }
+    }
+}
+
+/** Two columns side by side when the screen is wide, one below the other when it is not. */
+private val WIDE_MIN = 1000.dp
+
+@Composable
+private fun Columns(wide: Boolean, left: @Composable ColumnScope.() -> Unit, right: @Composable ColumnScope.() -> Unit) {
+    if (wide) {
+        Row(horizontalArrangement = Arrangement.spacedBy(32.dp)) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(20.dp), content = left)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(20.dp), content = right)
+        }
+    } else {
+        Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+            left()
+            right()
+        }
+    }
+}
+
+/** The screen's main button, always visible below the scrolling content. Not shown on the dim rest screen. */
+@Composable
+private fun BottomBar(state: RestState, actions: RestActions) {
+    Box(Modifier.fillMaxWidth().background(Background), contentAlignment = Alignment.Center) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Card).align(Alignment.TopCenter))
         Column(
-            Modifier
-                .widthIn(max = 1100.dp)
-                .fillMaxWidth()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 48.dp, vertical = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(24.dp),
+            Modifier.widthIn(max = 1100.dp).fillMaxWidth().padding(horizontal = 48.dp, vertical = 20.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             when (state.screen) {
-                Screen.ONBOARDING -> Onboarding(actions)
-                Screen.READY -> Ready(state, lighting, climate, actions)
-                Screen.RESTING -> if (state.dimmed) DimmedRest(state) else Resting(state, audio, lighting, climate, actions)
-                Screen.ENDED -> Ended(state, audio, lighting, climate, actions)
-            }
-        }
-        val dev = actions.openDevTools
-        if (dev != null && (state.screen == Screen.READY || state.screen == Screen.ENDED)) {
-            TextButton(onClick = dev, modifier = Modifier.align(Alignment.BottomEnd).padding(24.dp)) {
-                Text("개발 진단", color = TextSub, fontSize = 18.sp)
+                Screen.ONBOARDING -> PrimaryButton("확인했어요", enabled = true, onClick = actions.dismissOnboarding)
+                Screen.READY -> {
+                    // The same canStart as before; when it is false the first reason is readable right here.
+                    if (!state.canStart) (state.parkingBlock ?: state.doorBlock ?: state.timeBlock)?.let { Text(it.text, color = Warn, fontSize = 24.sp) }
+                    state.notice?.let { Text(it, color = Warn, fontSize = 24.sp) }
+                    PrimaryButton("쉬기 시작", enabled = state.canStart, onClick = actions.start)
+                }
+                Screen.RESTING -> {
+                    Text("10초 동안 누르지 않으면 화면이 어두워져요. 화면을 누르면 다시 밝아져요.", color = TextSub, fontSize = 20.sp)
+                    SecondaryButton("휴식 끝내기", wide = true, onClick = actions.endByUser)
+                }
+                Screen.ENDED -> PrimaryButton("다시 쉬기", enabled = true, onClick = actions.restAgain)
             }
         }
     }
 }
 
+/** A screen title with the debug-only [개발 진단] on the same line, away from the bottom button. */
 @Composable
-private fun Onboarding(actions: RestActions) {
+private fun TitleRow(title: String, color: Color, actions: RestActions) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(title, Modifier.weight(1f), color = color, fontSize = 44.sp, fontWeight = FontWeight.Bold)
+        actions.openDevTools?.let { dev ->
+            TextButton(onClick = dev, modifier = Modifier.heightIn(min = 64.dp)) { Text("개발 진단", color = TextSub, fontSize = 18.sp) }
+        }
+    }
+}
+
+@Composable
+private fun Onboarding() {
     Text("쉼표 캐빈", color = TextMain, fontSize = 48.sp, fontWeight = FontWeight.Bold)
     Text("주차한 차 안에서 잠깐 조용히 쉬어요.", color = TextMain, fontSize = 28.sp)
-    Column(Modifier.background(Card, RoundedCornerShape(20.dp)).padding(32.dp), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+    Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(32.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Bullet("픽업 시각을 정하면 그 2분 전에 휴식이 끝나요.")
         Bullet("조수석 문이 열리거나, 기어가 P에서 바뀌거나, 앱 화면을 벗어나면 바로 끝나요.")
-        Bullet("휴식 소리를 켜거나 조용히 쉴 수 있어요. 휴식 소리는 끝나기 1분 전부터 점점 작아져요.")
-        Bullet("제시간에 끝나면 안내음과 음성으로 알려 드려요. 통화 중처럼 다른 소리가 있거나 소리를 낼 수 없으면 화면으로만 알려요. 깨워 드리는 것을 보장하지는 않아요.")
-        Bullet("[바람 줄이기]·[운전석 온도 맞추기]를 켜 두면 쉬는 동안 바람을 한 단계 줄이고 운전석 목표 온도를 고른 값으로 맞춰요. 끝나면 원래대로 돌려요. 꺼진 공조는 켜지 않고, 연동(Sync)이 켜져 있으면 온도는 바꾸지 않아요. 쉬는 동안 차량에서 바꾼 공조 설정은 그대로 둬요.")
-        Bullet("[무드등 조정]을 켜 두면 쉬는 동안 무드등을 낮추고 따뜻한 색으로 바꿔요. 휴식이 끝나면 원래대로 돌려요. 무드등이 꺼져 있으면 건드리지 않고, 쉬는 중에 직접 바꾼 값은 그대로 둬요. 준비 화면에서 끌 수 있어요.")
+        Bullet("휴식 소리를 켜거나 조용히 쉴 수 있어요. 휴식 소리는 끝나기 1분 전부터 작아져요.")
+        Bullet("제시간에 끝나면 안내음과 음성으로 알려요. 다른 소리가 있거나 소리를 낼 수 없으면 화면으로만 알려요. 깨워 드리는 것을 보장하지는 않아요.")
+        Bullet("켜 둔 항목만 쉬는 동안 차량 설정을 바꾸고 끝나면 원래대로 돌려요: 무드등은 낮추고 따뜻하게, 바람은 한 단계 약하게, 운전석은 고른 온도로.")
+        Bullet("꺼져 있는 무드등과 공조는 켜지 않아요. 공조 연동(Sync)이 켜져 있으면 온도는 바꾸지 않아요. 쉬는 동안 직접 바꾼 값은 그대로 둬요.")
+        Bullet(SEAT_NOTE)
     }
-    PrimaryButton("확인했어요", enabled = true, onClick = actions.dismissOnboarding)
 }
 
+/** The seat requirement is kept, but the app cannot move the seat yet (STEP 7: the public position does not follow the move). */
+private const val SEAT_NOTE = "시트 자동 조절은 아직 지원하지 않아요. 차량에서 직접 편한 자세를 맞춰 주세요."
+
 @Composable
-private fun Ready(state: RestState, lighting: LightingUi, climate: ClimateUi, actions: RestActions) {
-    Text("휴식 준비", color = TextMain, fontSize = 44.sp, fontWeight = FontWeight.Bold)
-    Column(Modifier.background(Card, RoundedCornerShape(20.dp)).padding(32.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("픽업 시각", color = TextSub, fontSize = 24.sp)
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
-            SecondaryButton("−5분") { actions.adjustPickup(-5) }
-            Text(
-                clock(state.pickupMs, state.nowMs, state.zone),
-                Modifier.weight(1f),
-                color = TextMain,
-                fontSize = 72.sp,
-                fontWeight = FontWeight.Bold,
-            )
-            SecondaryButton("+5분") { actions.adjustPickup(5) }
-        }
-        if (state.pickupMs <= state.nowMs) Text("이미 지난 시각이에요", color = Warn, fontSize = 24.sp)
-        val restMinutes = state.restMs / 60_000
-        Text(
-            "휴식 종료 ${clock(RestTime.restEnd(state.pickupMs), state.nowMs, state.zone)} (픽업 ${PREP_MARGIN_MS / 60_000}분 전)" +
-                if (restMinutes > 0) " · ${restMinutes}분 쉴 수 있어요" else "",
-            color = TextMain,
-            fontSize = 26.sp,
-        )
+private fun Ready(state: RestState, lighting: LightingUi, climate: ClimateUi, actions: RestActions, wide: Boolean) {
+    TitleRow("휴식 준비", TextMain, actions)
+    Columns(
+        wide,
+        left = {
+            Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(32.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text("픽업 시각", color = TextSub, fontSize = 24.sp)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(24.dp)) {
+                    SecondaryButton("−5분") { actions.adjustPickup(-5) }
+                    Text(
+                        clock(state.pickupMs, state.nowMs, state.zone),
+                        Modifier.weight(1f),
+                        color = TextMain,
+                        fontSize = 72.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    SecondaryButton("+5분") { actions.adjustPickup(5) }
+                }
+                if (state.pickupMs <= state.nowMs) Text("이미 지난 시각이에요", color = Warn, fontSize = 24.sp)
+                val restMinutes = state.restMs / 60_000
+                Text(
+                    "휴식 종료 ${clock(RestTime.restEnd(state.pickupMs), state.nowMs, state.zone)} (픽업 ${PREP_MARGIN_MS / 60_000}분 전)" +
+                        if (restMinutes > 0) " · ${restMinutes}분 쉴 수 있어요" else "",
+                    color = TextMain,
+                    fontSize = 26.sp,
+                )
+            }
+            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                Check(state.parkingBlock, "주차됨 (P, 주행 제한 없음)")
+                Check(state.doorBlock, "조수석 문 닫힘")
+                Check(state.timeBlock, "쉴 시간 충분")
+            }
+            LightingRecordsOrEntry(lighting, actions)
+            ClimateRecordsOrEntry(climate, actions)
+            lighting.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
+            climate.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
+        },
+        right = {
+            SoundChoice(state, actions)
+            LightingChoice(state, actions)
+            ClimateChoiceCard(state, climate, actions)
+            SeatNotice()
+        },
+    )
+}
+
+/** The seat cannot be adjusted by the app yet: a fact, with no toggle and no seat state. */
+@Composable
+private fun SeatNotice() {
+    Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text("편한 자세", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+        Text(SEAT_NOTE, color = TextSub, fontSize = 20.sp)
     }
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Check(state.parkingBlock, "주차됨 (P, 주행 제한 없음)")
-        Check(state.doorBlock, "조수석 문 닫힘")
-        Check(state.timeBlock, "쉴 시간 충분")
-    }
-    SoundChoice(state, actions)
-    LightingChoice(state, actions)
-    ClimateChoiceCard(state, climate, actions)
-    LightingRecordsOrEntry(lighting, actions)
-    ClimateRecordsOrEntry(climate, actions)
-    lighting.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
-    climate.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
-    PrimaryButton("쉬기 시작", enabled = state.canStart, onClick = actions.start)
-    state.notice?.let { Text(it, color = Warn, fontSize = 24.sp) }
 }
 
 /** [무드등 조정] on/off. Only remembered here; the vehicle is read and written only after a rest really starts. */
 @Composable
 private fun LightingChoice(state: RestState, actions: RestActions) {
-    Column(Modifier.background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("무드등 조정", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
             Toggle("켬", state.lighting) { actions.setLighting(true) }
             Toggle("끔", !state.lighting) { actions.setLighting(false) }
         }
-        Text("무드등을 낮추고 따뜻하게 맞춰요. 끝나면 원래대로 돌려요.", color = TextSub, fontSize = 20.sp)
+        Text("무드등을 낮추고 따뜻하게 맞췄다가 끝나면 원래대로 돌려요. 꺼져 있으면 켜지 않아요.", color = TextSub, fontSize = 20.sp)
     }
 }
 
@@ -251,16 +339,19 @@ private fun LightingRecords(lighting: LightingUi, actions: RestActions) {
 @Composable
 private fun LightLines(items: List<LightItemUi>) {
     items.forEach { item ->
-        val sameProp = items.filter { it.prop == item.prop && it.area.isNotEmpty() }
-        val label = item.prop.label + if (sameProp.size > 1) " ${sameProp.indexOf(item) + 1}" else ""
-        Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(label, color = TextMain, fontSize = 22.sp)
-            item.original?.let { original ->
-                if (item.prop == LightProp.BRIGHTNESS) {
-                    Text("원래 $original", color = TextSub, fontSize = 20.sp)
-                } else {
-                    Text("원래 색", color = TextSub, fontSize = 20.sp)
-                    Box(Modifier.size(28.dp).background(Color(0xFF000000 or (original.toLong() and 0xFFFFFF)), RoundedCornerShape(6.dp)))
+        // Several areas of one property are told apart by easy seat names, never by SDK keys.
+        val areas = items.filter { it.prop == item.prop && it.area.isNotEmpty() }.map { it.area }.distinct()
+        val label = item.prop.label + if (areas.size > 1) " · ${seatName(item.area)}" else ""
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(label, color = TextMain, fontSize = 22.sp)
+                item.original?.let { original ->
+                    if (item.prop == LightProp.BRIGHTNESS) {
+                        Text("원래 $original", color = TextSub, fontSize = 20.sp)
+                    } else {
+                        Text("원래 색", color = TextSub, fontSize = 20.sp)
+                        Box(Modifier.size(28.dp).background(Color(0xFF000000 or (original.toLong() and 0xFFFFFF)), RoundedCornerShape(6.dp)))
+                    }
                 }
             }
             Text(
@@ -280,7 +371,7 @@ private fun LightLines(items: List<LightItemUi>) {
 @Composable
 private fun ClimateChoiceCard(state: RestState, climate: ClimateUi, actions: RestActions) {
     val range = climate.tempRange
-    Column(Modifier.background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("바람 줄이기", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
@@ -313,7 +404,7 @@ private fun ClimateChoiceCard(state: RestState, climate: ClimateUi, actions: Res
                 )
             }
         }
-        Text("바람을 한 단계 줄이고 운전석 목표 온도를 맞춰요. 끝나면 원래대로 돌려요. 꺼진 공조는 켜지 않고, 연동(Sync)이 켜져 있으면 온도는 바꾸지 않아요.", color = TextSub, fontSize = 20.sp)
+        Text("바람을 한 단계 줄이고 운전석 온도를 맞췄다가 끝나면 원래대로 돌려요. 꺼진 공조는 켜지 않고, 연동(Sync)이 켜져 있으면 온도는 바꾸지 않아요.", color = TextSub, fontSize = 20.sp)
     }
 }
 
@@ -367,9 +458,14 @@ private fun ClimateRecords(climate: ClimateUi, actions: RestActions) {
 @Composable
 private fun ClimateLines(items: List<ClimateItemUi>) {
     items.forEach { item ->
-        Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(item.prop?.label ?: "자동 모드", color = TextMain, fontSize = 22.sp)
-            item.original?.let { Text(it, color = TextSub, fontSize = 20.sp) }
+        // Several areas of one property (or several auto areas) are told apart by easy seat names, never by SDK keys.
+        val areas = items.filter { it.prop == item.prop && it.area.isNotEmpty() }.map { it.area }.distinct()
+        val label = (item.prop?.label ?: "자동 모드") + if (areas.size > 1) " · ${seatName(item.area)}" else ""
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(label, color = TextMain, fontSize = 22.sp)
+                item.original?.let { Text(it, color = TextSub, fontSize = 20.sp) }
+            }
             Text(
                 item.text,
                 color = when (item.result) {
@@ -400,12 +496,16 @@ private fun SmallButton(label: String, enabled: Boolean, primary: Boolean = fals
 /** Rest sound on/quiet and its level. Quiet only turns the rest sound off; the end announcement still plays when possible. */
 @Composable
 private fun SoundChoice(state: RestState, actions: RestActions) {
-    Column(Modifier.background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-            Toggle("휴식 소리 켬", state.sound == SoundMode.ON) { actions.setSound(SoundMode.ON) }
-            Toggle("조용히", state.sound == SoundMode.QUIET) { actions.setSound(SoundMode.QUIET) }
+            Text("휴식 소리", Modifier.widthIn(min = 100.dp), color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.weight(1f))
-            Text("크기", color = TextSub, fontSize = 22.sp)
+            Toggle("켬", state.sound == SoundMode.ON) { actions.setSound(SoundMode.ON) }
+            Toggle("조용히", state.sound == SoundMode.QUIET) { actions.setSound(SoundMode.QUIET) }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("크기", Modifier.widthIn(min = 100.dp), color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
             for ((level, label) in listOf(SoundLevel.LOW to "작게", SoundLevel.MEDIUM to "보통", SoundLevel.HIGH to "크게")) {
                 Toggle(label, state.level == level) { actions.setLevel(level) }
             }
@@ -429,14 +529,11 @@ private fun Resting(state: RestState, audio: AudioUi, lighting: LightingUi, clim
     climate.restLine?.let { Text(it, color = TextSub, fontSize = 24.sp) }
     SoundChoice(state, actions)
     state.notice?.let { Text(it, color = Warn, fontSize = 24.sp) }
-    Spacer(Modifier.height(8.dp))
-    SecondaryButton("휴식 끝내기", wide = true, onClick = actions.endByUser)
-    Text("10초 동안 누르지 않으면 화면이 어두워져요. 화면을 누르면 다시 밝아져요.", color = TextSub, fontSize = 22.sp)
 }
 
 @Composable
 private fun DimmedRest(state: RestState) {
-    Box(Modifier.fillMaxWidth().heightIn(min = 600.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             if (state.finalMinute) Text("곧 끝나요", color = Dimmed, fontSize = 32.sp)
             Text(remaining(state.remainingMs), color = Dimmed, fontSize = 140.sp, fontWeight = FontWeight.Bold)
@@ -445,58 +542,63 @@ private fun DimmedRest(state: RestState) {
 }
 
 @Composable
-private fun Ended(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions) {
+private fun Ended(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions, wide: Boolean) {
     val ending = state.ending ?: return
-    Text(
+    TitleRow(
         when (ending.reason.kind) {
             EndKind.NORMAL -> "휴식이 끝났어요"
             EndKind.USER -> "휴식을 끝냈어요"
             EndKind.STOPPED -> "휴식을 멈췄어요"
         },
-        color = if (ending.reason.kind == EndKind.STOPPED) Warn else Accent,
-        fontSize = 48.sp,
-        fontWeight = FontWeight.Bold,
+        if (ending.reason.kind == EndKind.STOPPED) Warn else Accent,
+        actions,
     )
-    Text(ending.reason.text, color = TextMain, fontSize = 30.sp)
-    Text("종료 시각 ${clock(ending.atWallMs, state.nowMs, state.zone)}", color = TextSub, fontSize = 26.sp)
-    if (ending.reason.kind == EndKind.NORMAL) {
-        when (audio.announce) {
-            Announce.RUNNING -> "안내음과 음성으로 알리는 중이에요"
-            Announce.VOICE -> "안내음과 음성으로 알렸어요"
-            Announce.CHIME_ONLY -> "안내음으로 알렸어요. 음성 안내는 하지 못했어요"
-            Announce.SCREEN_ONLY -> "다른 소리가 있거나 소리를 낼 수 없어 화면으로만 알려요"
-            Announce.NONE -> null
-        }?.let { Text(it, color = TextSub, fontSize = 24.sp) }
-    }
-    if (lighting.items.isNotEmpty() || lighting.restLine != null) {
-        Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("무드등", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
-            if (lighting.items.isEmpty()) lighting.restLine?.let { Text(it, color = TextSub, fontSize = 20.sp) }
-            LightLines(lighting.items)
-            if (lighting.working) Text("무드등을 처리하는 중이에요. 휴식 소리와는 따로 진행돼요.", color = TextSub, fontSize = 20.sp)
-        }
-    }
-    if (!lighting.working) LightingRecordsOrEntry(lighting, actions)
-    if (lighting.earlier.isNotEmpty()) {
-        Text("이전 무드등 기록", color = TextSub, fontSize = 22.sp)
-        LightLines(lighting.earlier)
-    }
-    lighting.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
-    if (climate.items.isNotEmpty() || climate.restLine != null) {
-        Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("공조", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
-            if (climate.items.isEmpty()) climate.restLine?.let { Text(it, color = TextSub, fontSize = 20.sp) }
-            ClimateLines(climate.items)
-            if (climate.working) Text("공조를 처리하는 중이에요. 휴식 소리와는 따로 진행돼요.", color = TextSub, fontSize = 20.sp)
-        }
-    }
-    if (!climate.working) ClimateRecordsOrEntry(climate, actions)
-    if (climate.earlier.isNotEmpty()) {
-        Text("이전 공조 기록", color = TextSub, fontSize = 22.sp)
-        ClimateLines(climate.earlier)
-    }
-    climate.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
-    PrimaryButton("다시 쉬기", enabled = true, onClick = actions.restAgain)
+    Columns(
+        wide,
+        left = {
+            Text(ending.reason.text, color = TextMain, fontSize = 30.sp)
+            Text("종료 시각 ${clock(ending.atWallMs, state.nowMs, state.zone)}", color = TextSub, fontSize = 26.sp)
+            if (ending.reason.kind == EndKind.NORMAL) {
+                when (audio.announce) {
+                    Announce.RUNNING -> "안내음과 음성으로 알리는 중이에요"
+                    Announce.VOICE -> "안내음과 음성으로 알렸어요"
+                    Announce.CHIME_ONLY -> "안내음으로 알렸어요. 음성 안내는 하지 못했어요"
+                    Announce.SCREEN_ONLY -> "다른 소리가 있거나 소리를 낼 수 없어 화면으로만 알려요"
+                    Announce.NONE -> null
+                }?.let { Text(it, color = TextSub, fontSize = 24.sp) }
+            }
+        },
+        right = {
+            if (lighting.items.isNotEmpty() || lighting.restLine != null) {
+                Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("무드등", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                    if (lighting.items.isEmpty()) lighting.restLine?.let { Text(it, color = TextSub, fontSize = 20.sp) }
+                    LightLines(lighting.items)
+                    if (lighting.working) Text("무드등을 처리하는 중이에요. 휴식 소리와는 따로 진행돼요.", color = TextSub, fontSize = 20.sp)
+                }
+            }
+            if (!lighting.working) LightingRecordsOrEntry(lighting, actions)
+            if (lighting.earlier.isNotEmpty()) {
+                Text("이전 무드등 기록", color = TextSub, fontSize = 22.sp)
+                LightLines(lighting.earlier)
+            }
+            lighting.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
+            if (climate.items.isNotEmpty() || climate.restLine != null) {
+                Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text("공조", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                    if (climate.items.isEmpty()) climate.restLine?.let { Text(it, color = TextSub, fontSize = 20.sp) }
+                    ClimateLines(climate.items)
+                    if (climate.working) Text("공조를 처리하는 중이에요. 휴식 소리와는 따로 진행돼요.", color = TextSub, fontSize = 20.sp)
+                }
+            }
+            if (!climate.working) ClimateRecordsOrEntry(climate, actions)
+            if (climate.earlier.isNotEmpty()) {
+                Text("이전 공조 기록", color = TextSub, fontSize = 22.sp)
+                ClimateLines(climate.earlier)
+            }
+            climate.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
+        },
+    )
 }
 
 @Composable

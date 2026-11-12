@@ -156,7 +156,7 @@ class RestClimate(
             val bounds = cap?.second?.get(DRIVER_AREA)
             val inc = cap?.third
             tempRangeProblem = when {
-                cap == null -> "운전석 온도 범위를 확인하지 못했어요${e?.let { "($it)" } ?: ""}"
+                cap == null -> userText("운전석 온도 범위를 확인하지 못했어요", e)
                 cap.first != Access.READ_WRITE -> "이 차에서는 목표 온도를 바꿀 수 없어요"
                 bounds == null -> "운전석만 따로 맞출 수 있는 온도 영역이 없어요"
                 inc == null -> "온도 간격을 확인할 수 없어요"
@@ -347,7 +347,7 @@ class RestClimate(
         if (choice.fan) {
             val cap = caps[ClimateProp.FAN]
             when {
-                cap == null -> skips += skipped(ClimateProp.FAN, "바람 세기 지원을 확인하지 못해 건너뛰었어요${capErr[ClimateProp.FAN]?.let { "($it)" } ?: ""}")
+                cap == null -> skips += skipped(ClimateProp.FAN, userText("바람 세기 지원을 확인하지 못해 건너뛰었어요", capErr[ClimateProp.FAN]))
                 cap.first != Access.READ_WRITE -> skips += skipped(ClimateProp.FAN, "이 차에서는 바람 세기를 바꿀 수 없어 건너뛰었어요")
                 cap.second.isEmpty() -> skips += skipped(ClimateProp.FAN, "이 차는 바람 세기 조정을 지원하지 않아 건너뛰었어요")
                 else -> cap.second.forEach { (area, bounds) -> members += mapped(ClimateProp.FAN, area, bounds, null, null) }
@@ -359,7 +359,7 @@ class RestClimate(
             val inc = cap?.third
             if (cap?.first == Access.READ_WRITE && bounds != null && inc != null) tempRange = TempRange(bounds.start, bounds.endInclusive, inc)
             val why = when {
-                cap == null -> "온도 지원을 확인하지 못해 건너뛰었어요${capErr[ClimateProp.TEMP]?.let { "($it)" } ?: ""}"
+                cap == null -> userText("온도 지원을 확인하지 못해 건너뛰었어요", capErr[ClimateProp.TEMP])
                 cap.first != Access.READ_WRITE -> "이 차에서는 목표 온도를 바꿀 수 없어 건너뛰었어요"
                 bounds == null -> "운전석만 따로 맞출 수 있는 온도 영역이 없어 건너뛰었어요"
                 inc == null -> "온도 간격을 확인할 수 없어 건너뛰었어요"
@@ -409,7 +409,7 @@ class RestClimate(
                 ClimateProp.TEMP -> item.wanted
             }
             val why = when {
-                cur == null -> "현재 값을 읽지 못해 바꾸지 않았어요${readErr?.let { "($it)" } ?: ""}"
+                cur == null -> userText("현재 값을 읽지 못해 바꾸지 않았어요", readErr)
                 !writable(item, cur) -> "지금 값을 나중에 그대로 되돌릴 수 없어 바꾸지 않았어요"
                 target == null -> "이미 가장 약한 단계라 그대로 두었어요"
                 !writable(item, target) -> "목표 값을 이 차에서 쓸 수 없어 바꾸지 않았어요"
@@ -791,7 +791,7 @@ class RestClimate(
                     if (now.stage != job.stage) return@readShared release()
                     val baseMoved = job.base.any { (s, v) -> shared[s] != v }
                     when {
-                        cur == null || required(now.dualArea).any { shared[it] == null } -> return@readShared hold(now, "현재 값을 읽지 못해 되돌리지 않았어요(${readErr ?: "공유 상태"})")
+                        cur == null || required(now.dualArea).any { shared[it] == null } -> return@readShared hold(now, userText(if (cur == null) "현재 값을 읽지 못해 되돌리지 않았어요" else "공조 상태(자동 모드·전원·연동)를 읽지 못해 되돌리지 않았어요", readErr))
                         baseMoved && job.manual -> {
                             persist(replaceGroup(now.copy(stage = GroupStage.RESULT_UNKNOWN)))
                             return@readShared hold(now, "되돌리는 중에 공조 상태(자동 모드·전원·연동)가 바뀌어 멈췄어요. 차량에서 확인한 뒤 다시 [원래대로]를 눌러 주세요")
@@ -830,7 +830,7 @@ class RestClimate(
             val bounds = cap?.second?.get(m.area)
             then(
                 when {
-                    cap == null -> "${m.prop.label} 지원을 확인하지 못해 되돌리지 않았어요($e)"
+                    cap == null -> userText("${m.prop.label} 지원을 확인하지 못해 되돌리지 않았어요", e)
                     cap.first != Access.READ_WRITE -> "${m.prop.label}를 바꿀 수 없는 상태라 되돌리지 않았어요"
                     bounds == null -> "기록한 영역을 지금 지원하지 않아 되돌리지 않았어요"
                     m.original !in bounds || ClimateValues.payload(m.prop, m.original) == null -> "원래 값이 지금 지원 범위 밖이라 되돌리지 않았어요"
@@ -1138,6 +1138,12 @@ class RestClimate(
         g.members.firstOrNull { key(g.groupId, it.prop, it.area) == k }?.let { mark(g, it, result, text) }
     }
 
+    /** The screen shows [text] only. A technical [detail] (an SDK error or a timeout) goes to the log alone. */
+    private fun userText(text: String, detail: String?): String {
+        detail?.let { log("$text — 원인: $it") }
+        return text
+    }
+
     private fun say(text: String) {
         notice = text
         publish()
@@ -1202,7 +1208,7 @@ class RestClimate(
         g.locked -> "응답을 기다리고 있어요(결과를 아직 몰라요)"
         g.stage == GroupStage.EXTERNAL_CHANGE -> heldWhy[g.groupId] ?: "차량에서 바뀐 공조 설정은 유지했어요"
         g.stage == GroupStage.HELD || g.stage == GroupStage.RESULT_UNKNOWN || g.stage == GroupStage.AUTO_RESTORE_FAILED -> heldWhy[g.groupId] ?: "원래대로 돌리지 않았어요"
-        else -> "아직 휴식 값이에요"
+        else -> "휴식 중 적용한 기록이 남아 있어요. 지금 설정은 확인이 필요해요"
     }
 
     private fun textOf(g: ClimateGroup, m: ClimateMember): String = when {

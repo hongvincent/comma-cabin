@@ -284,7 +284,7 @@ class RestLighting(
         sw: Pair<Access, List<String>>?, swErr: String?,
     ): List<Item> {
         val switchAreas = sw?.takeIf { it.first == Access.READ || it.first == Access.READ_WRITE }?.second
-        val switchProblem = if (switchAreas == null) "무드등 스위치를 확인할 수 없어 조정하지 않았어요${swErr?.let { "($it)" } ?: ""}" else null
+        val switchProblem = if (switchAreas == null) userText("무드등 스위치를 확인할 수 없어 조정하지 않았어요", swErr) else null
         fun item(prop: LightProp, area: String, bounds: IntRange?, access: Access): Item {
             val switchArea = switchAreas?.let { switchFor(area, it) }
             val skip = when {
@@ -297,10 +297,10 @@ class RestLighting(
             return Item(prop, area, bounds, switchArea, skip)
         }
         val list = mutableListOf<Item>()
-        if (bright == null) list += Item(LightProp.BRIGHTNESS, "", null, null, "밝기 지원을 확인하지 못해 조정하지 않았어요${brightErr?.let { "($it)" } ?: ""}")
+        if (bright == null) list += Item(LightProp.BRIGHTNESS, "", null, null, userText("밝기 지원을 확인하지 못해 조정하지 않았어요", brightErr))
         else if (bright.second.isEmpty()) list += Item(LightProp.BRIGHTNESS, "", null, null, "이 차는 무드등 밝기 조정을 지원하지 않아 생략했어요")
         else bright.second.forEach { (area, bounds) -> list += item(LightProp.BRIGHTNESS, area, bounds, bright.first) }
-        if (color == null) list += Item(LightProp.COLOR, "", null, null, "색 지원을 확인하지 못해 조정하지 않았어요${colorErr?.let { "($it)" } ?: ""}")
+        if (color == null) list += Item(LightProp.COLOR, "", null, null, userText("색 지원을 확인하지 못해 조정하지 않았어요", colorErr))
         else if (color.second.isEmpty()) list += Item(LightProp.COLOR, "", null, null, "이 차는 무드등 색 조정을 지원하지 않아 생략했어요")
         else color.second.forEach { area -> list += item(LightProp.COLOR, area, null, color.first) }
         return list
@@ -333,7 +333,7 @@ class RestLighting(
         askOrNull(token, runId, "${item.prop.label} 현재값", { ok, err -> port.read(item.prop, item.area, ok, err) }) { cur, readErr ->
             val target = cur?.let { targetFor(item, it) }
             val why = when {
-                cur == null -> "현재 값을 읽지 못해 조정하지 않았어요${readErr?.let { "($it)" } ?: ""}"
+                cur == null -> userText("현재 값을 읽지 못해 조정하지 않았어요", readErr)
                 item.prop == LightProp.BRIGHTNESS && (item.bounds == null || cur !in item.bounds) -> "현재 밝기가 지원 범위 밖이라 조정하지 않았어요"
                 item.prop == LightProp.COLOR && !LightValues.alphaAllowed(cur) -> "현재 색 값을 해석할 수 없어 조정하지 않았어요"
                 target == null -> if (item.prop == LightProp.BRIGHTNESS) "이미 충분히 어두워 그대로 두었어요" else "이미 따뜻한 색이라 그대로 두었어요"
@@ -345,7 +345,7 @@ class RestLighting(
             }
             askOrNull(token, runId, "${item.prop.label} 스위치", { ok, err -> port.readSwitch(item.switchArea!!, ok, err) }) { sw, swErr ->
                 val block = when {
-                    sw == null -> "무드등 상태를 확인하지 못해 조정하지 않았어요${swErr?.let { "($it)" } ?: ""}"
+                    sw == null -> userText("무드등 상태를 확인하지 못해 조정하지 않았어요", swErr)
                     sw != SwitchState.ON -> "무드등이 꺼져 있어 조정하지 않았어요"
                     else -> commandBlock(item.prop, item.area)
                 }
@@ -582,7 +582,7 @@ class RestLighting(
             if (capProblem != null) return@restoreCapability hold(r, capProblem)
             readOrNull(r.prop, r.area) { cur, readErr ->
                 val latest = record(r.jobId)?.takeIf { it.requestId == r.requestId } ?: return@readOrNull release()
-                if (cur == null) return@readOrNull hold(latest, "현재 값을 읽지 못해 되돌리지 않았어요($readErr)")
+                if (cur == null) return@readOrNull hold(latest, userText("현재 값을 읽지 못해 되돌리지 않았어요", readErr))
                 val ours = LightValues.same(r.prop, cur, r.target) || LightValues.same(r.prop, cur, r.original)
                 if (!job.manual && !ours) {
                     // Checked again right before the restore: a change the listener missed is still the user's.
@@ -628,7 +628,7 @@ class RestLighting(
             val bounds = cap?.second?.get(r.area)
             then(
                 when {
-                    cap == null -> "밝기 지원을 확인하지 못해 되돌리지 않았어요($e)"
+                    cap == null -> userText("밝기 지원을 확인하지 못해 되돌리지 않았어요", e)
                     cap.first != Access.READ_WRITE -> "밝기를 바꿀 수 없는 상태라 되돌리지 않았어요"
                     bounds == null -> "기록한 영역을 지금 지원하지 않아 되돌리지 않았어요"
                     r.original !in bounds -> "원래 밝기가 지금 지원 범위 밖이라 되돌리지 않았어요"
@@ -640,7 +640,7 @@ class RestLighting(
             if (!alive) return@withTimeout
             then(
                 when {
-                    cap == null -> "색 지원을 확인하지 못해 되돌리지 않았어요($e)"
+                    cap == null -> userText("색 지원을 확인하지 못해 되돌리지 않았어요", e)
                     cap.first != Access.READ_WRITE -> "색을 바꿀 수 없는 상태라 되돌리지 않았어요"
                     r.area !in cap.second -> "기록한 영역을 지금 지원하지 않아 되돌리지 않았어요"
                     !LightValues.alphaAllowed(r.original) -> "원래 색 값을 해석할 수 없어 되돌리지 않았어요"
@@ -655,7 +655,7 @@ class RestLighting(
         withTimeout({ ok, err -> port.switchCapability({ a, l -> ok(a to l) }, err) }) { sw, swErr ->
             if (!alive) return@withTimeout
             val switchArea = sw?.takeIf { it.first == Access.READ || it.first == Access.READ_WRITE }?.second?.let { switchFor(area, it) }
-                ?: return@withTimeout then("무드등 스위치를 확인하지 못해 되돌리지 않았어요${swErr?.let { "($it)" } ?: ""}")
+                ?: return@withTimeout then(userText("무드등 스위치를 확인하지 못해 되돌리지 않았어요", swErr))
             withTimeout({ ok, err -> port.readSwitch(switchArea, ok, err) }) { state, _ ->
                 if (!alive) return@withTimeout
                 then(
@@ -764,6 +764,12 @@ class RestLighting(
         publish()
     }
 
+    /** The screen shows [text] only. A technical [detail] (an SDK error or a timeout) goes to the log alone. */
+    private fun userText(text: String, detail: String?): String {
+        detail?.let { log("$text — 원인: $it") }
+        return text
+    }
+
     private fun say(text: String) {
         notice = text
         publish()
@@ -816,7 +822,7 @@ class RestLighting(
     private fun textOf(r: LightRecord): String = when {
         r.priorRequestUnresolved -> "이전 실행의 요청 결과를 몰라 앱에서 바꾸지 않아요. 차량 설정에서 직접 맞춰 주세요"
         !r.responseReceived -> "응답을 기다리고 있어요(결과를 아직 몰라요)"
-        r.stage == LightStage.APPLY_CONFIRMED -> "아직 휴식 값으로 바뀌어 있어요"
+        r.stage == LightStage.APPLY_CONFIRMED -> "휴식 중 적용한 기록이 남아 있어요. 지금 설정은 확인이 필요해요"
         r.stage == LightStage.USER_CHANGED -> "직접 바꾼 값이라 그대로 두었어요"
         r.stage == LightStage.RESTORE_HELD -> heldWhy[r.jobId] ?: "되돌리지 않았어요"
         r.stage == LightStage.RESTORE_FAILED -> "되돌렸는지 확인하지 못했어요"
