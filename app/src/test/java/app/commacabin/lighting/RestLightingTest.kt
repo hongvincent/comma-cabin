@@ -377,6 +377,60 @@ class RestLightingTest {
     }
 
     @Test
+    fun `a read-only check shows the vehicle's brightness and color - no command, no record change, an unknown color format is not compared`() {
+        lighting.checkRecords(this)
+        assertEquals(0, port.calls) // no records, no read
+
+        store.records = listOf(
+            LightRecord("jb", LightProp.BRIGHTNESS, FIVE, 70, 30, LightStage.APPLY_CONFIRMED, "rb", 30, responseReceived = true),
+            LightRecord("jc", LightProp.COLOR, FIVE, WHITE_READ, WARM, LightStage.APPLY_CONFIRMED, "rc", WARM, responseReceived = true),
+        )
+        port.values[LightProp.BRIGHTNESS to FIVE] = 50 // changed in the vehicle settings while the app was off
+        port.values[LightProp.COLOR to FIVE] = WARM and 0xFFFFFF
+        val next = owner()
+        val before = store.records
+        val saves = store.saves
+        next.checkRecords(this)
+        scheduler.advance(60_000)
+        assertTrue(port.writes.isEmpty())
+        assertEquals(saves, store.saves)
+        assertEquals(before, store.records)
+        assertTrue(next.state.open.single { it.prop == LightProp.BRIGHTNESS }.checked!!.run { contains("50") && contains("원래와 달라요") })
+        assertTrue(next.state.open.single { it.prop == LightProp.COLOR }.checked!!.contains("휴식 목표 색과 같아요"))
+
+        port.values[LightProp.COLOR to FIVE] = 0x12FF9A40 // an alpha the color contract cannot read
+        next.checkRecords(this)
+        assertEquals("색을 읽었지만 비교할 수 없는 값이에요", next.state.open.single { it.prop == LightProp.COLOR }.checked)
+    }
+
+    @Test
+    fun `an older screen stopping late keeps the newer check, a late answer after a new rest is dropped, a locked record stays locked`() {
+        store.records = listOf(LightRecord("job", LightProp.BRIGHTNESS, FIVE, 70, 30, LightStage.APPLY_REQUESTED, "req", 30, responseReceived = false))
+        port.values[LightProp.BRIGHTNESS to FIVE] = 70 // reads the original, yet the answer never came
+        val older = Any()
+        port.holdValueReads = true
+        lighting.checkRecords(older)
+        lighting.checkRecords(this)
+        lighting.stopCheck(older)
+        port.holdValueReads = false
+        port.release()
+        assertFalse(lighting.state.checking)
+        assertTrue(lighting.state.open.single().checked!!.contains("원래와 같아요"))
+        assertNotNull(lighting.state.restoreBlock)
+        assertNotNull(lighting.state.discardBlock)
+        assertTrue(record(LightProp.BRIGHTNESS).priorRequestUnresolved)
+
+        port.holdValueReads = true
+        lighting.checkRecords(this)
+        port.holdValueReads = false
+        lighting.onRestStart(true) // the locked record blocks it; the check is dropped
+        port.release()
+        assertFalse(lighting.state.checking)
+        assertTrue(lighting.state.open.all { it.checked == null })
+        assertTrue(port.writes.none { it.prop == LightProp.BRIGHTNESS })
+    }
+
+    @Test
     fun `debug work or records block applying and an explicit restore`() {
         debug = "밝기 검증 기록이 남아 있어요"
         lighting.onRestStart(true)

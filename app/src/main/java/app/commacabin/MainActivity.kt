@@ -64,6 +64,11 @@ import java.time.ZoneId
 
 class MainActivity : ComponentActivity() {
     private val main = Handler(Looper.getMainLooper())
+    /** Read-only check of the records left from earlier rests, once this screen is visible (after the SDK binding wait). */
+    private val checkRecords = Runnable {
+        cabin.lighting.checkRecords(this)
+        cabin.climate.checkRecords(this)
+    }
     private val uiState = mutableStateOf(ProbeUiState())
     private val supportState = mutableStateOf(SupportUiState())
     private val supportTab = mutableStateOf(false)
@@ -252,6 +257,8 @@ class MainActivity : ComponentActivity() {
             discardClimate = { cabin.climate.discardRecords() },
             deferClimate = { cabin.climate.defer() },
             showClimate = { cabin.climate.showRecords() },
+            checkLighting = { cabin.lighting.checkRecords(this) },
+            checkClimate = { cabin.climate.checkRecords(this) },
             openDevTools = if (BuildConfig.DEBUG) ({ devToolsOpen.value = true }) else null,
         )
         setContent {
@@ -324,6 +331,8 @@ class MainActivity : ComponentActivity() {
         rest.onVisible()
         // Read-only: the driver temperature range and step for the ready screen's ± buttons.
         if (cabin.climate.state.tempRange == null) cabin.climate.loadTempRange()
+        // Read-only, once per showing: what the vehicle has now for each record left (no records = no call).
+        main.postDelayed(checkRecords, FIRST_READ_DELAY_MS)
         started = true
         syncControlVisibility()
     }
@@ -339,6 +348,10 @@ class MainActivity : ComponentActivity() {
      */
     override fun onStop() {
         rest.onHidden()
+        // Only this Activity's own pending check: an older Activity stopping late never cancels a newer one's.
+        main.removeCallbacks(checkRecords)
+        cabin.lighting.stopCheck(this)
+        cabin.climate.stopCheck(this)
         audio.stopAll()
         tts.stopSpeech()
         started = false

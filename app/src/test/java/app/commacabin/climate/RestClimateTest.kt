@@ -231,6 +231,147 @@ class RestClimateTest {
         assertTrue(climate.state.items.any { it.prop == null && it.text.contains("원래대로") })
     }
 
+    private val shared = mapOf("POWER" to true, "AUTO" to false, "DUAL" to false)
+
+    private fun applied(id: String = "g", fanArea: String = FRONT, autoArea: String = FRONT, fan: Float = 3f, rest: Float = 2f) = ClimateGroup(
+        id, autoArea, FIVE, if (autoArea == FRONT) FRONT else null, false, if (autoArea == FRONT) shared else shared - "DUAL", GroupStage.ACTIVE,
+        listOfNotNull(
+            ClimateMember(ClimateProp.FAN, fanArea, fan, rest, MemberStage.APPLIED, "$id-f", rest, responseReceived = true),
+            ClimateMember(ClimateProp.TEMP, DRIVER, 22f, 22.5f, MemberStage.APPLIED, "$id-t", 22.5f, responseReceived = true).takeIf { autoArea == FRONT },
+        ),
+    )
+
+    @Test
+    fun `a read-only check on the next run shows what the vehicle has per area - no command, no record change, no restore`() {
+        store.groups = listOf(applied(), applied("h", fanArea = REAR, autoArea = REAR, fan = 2f, rest = 1f))
+        port.values[ClimateProp.FAN to FRONT] = 4f // changed on the vehicle while the app was off
+        port.values[ClimateProp.TEMP to DRIVER] = 22.5f
+        port.values[ClimateProp.FAN to REAR] = 1f
+        port.sideValues[Side.AUTO to FRONT] = true
+        val before = store.groups
+        val saves = store.saves
+
+        climate.checkRecords(this)
+        scheduler.advance(60_000)
+        assertTrue(port.writes.isEmpty())
+        assertEquals(saves, store.saves)
+        assertEquals(before, store.groups)
+        assertFalse(climate.state.checking)
+        val open = climate.state.open
+        assertTrue(open.single { it.prop == ClimateProp.FAN && it.area == FRONT }.checked!!.run { contains("4") && contains("원래와 달라요") })
+        assertTrue(open.single { it.prop == ClimateProp.FAN && it.area == REAR }.checked!!.run { contains("1") && contains("휴식 목표와 같아요") })
+        assertTrue(open.single { it.prop == ClimateProp.TEMP }.checked!!.contains("22.5°C"))
+        assertTrue(open.single { it.prop == null && it.area == FRONT }.checked!!.contains("자동 모드 켜짐(휴식 전과 달라요)"))
+        assertTrue(open.single { it.prop == null && it.area == REAR }.checked!!.contains("자동 모드 확인하지 못함"))
+        assertEquals(GroupStage.ACTIVE, store.groups.first { it.groupId == "g" }.stage) // no external change is concluded from a display read
+    }
+
+    @Test
+    fun `no records means no read, and an unanswered record stays locked even when the vehicle reads the original`() {
+        climate.checkRecords(this)
+        assertEquals(0, port.calls)
+
+        val locked = applied().let { g -> g.copy(members = g.members.map { if (it.prop == ClimateProp.FAN) it.copy(stage = MemberStage.APPLY_REQUESTED, responseReceived = false) else it }) }
+        store.groups = listOf(locked)
+        val other = owner() // the next run loads the unanswered record
+        port.values[ClimateProp.FAN to FRONT] = 3f
+        port.values[ClimateProp.TEMP to DRIVER] = 22f
+        other.checkRecords(this)
+        assertTrue(other.state.open.single { it.prop == ClimateProp.FAN }.checked!!.contains("원래와 같아요"))
+        assertNotNull(other.state.restoreBlock)
+        assertNotNull(other.state.discardBlock)
+        other.restoreRecords()
+        other.discardRecords()
+        assertTrue(port.writes.isEmpty())
+        assertEquals(ClimateResult.LOCKED, other.state.open.first().result)
+    }
+
+    @Test
+    fun `a failed or timed-out read says so, and a new check reads again`() {
+        store.groups = listOf(applied())
+        port.values[ClimateProp.FAN to FRONT] = 2f
+        port.holdValueReads = true
+        climate.checkRecords(this)
+        assertTrue(climate.state.checking)
+        assertTrue(climate.state.open.all { it.checked == "차량 설정을 확인하고 있어요" })
+        scheduler.advance(CLIMATE_READ_TIMEOUT_MS) // fan
+        scheduler.advance(CLIMATE_READ_TIMEOUT_MS) // temperature
+        assertFalse(climate.state.checking)
+        assertEquals("차량 설정을 확인하지 못했어요", climate.state.open.single { it.prop == ClimateProp.FAN }.checked)
+        port.release() // answers after the timeout change nothing
+        assertEquals("차량 설정을 확인하지 못했어요", climate.state.open.single { it.prop == ClimateProp.FAN }.checked)
+
+        port.holdValueReads = false
+        port.failValues += ClimateProp.TEMP
+        climate.checkRecords(this)
+        assertTrue(climate.state.open.single { it.prop == ClimateProp.FAN }.checked!!.contains("휴식 목표와 같아요"))
+        assertEquals("차량 설정을 확인하지 못했어요", climate.state.open.single { it.prop == ClimateProp.TEMP }.checked)
+        port.failValues.clear()
+        climate.checkRecords(this)
+        assertTrue(climate.state.open.single { it.prop == ClimateProp.TEMP }.checked!!.contains("22.0°C"))
+        assertTrue(port.writes.isEmpty())
+    }
+
+    @Test
+    fun `a late check answer never touches a restore, a new rest, a deletion or a new owner, and an older screen cannot stop a newer one's check`() {
+        store.groups = listOf(applied())
+        port.values[ClimateProp.FAN to FRONT] = 2f
+        port.values[ClimateProp.TEMP to DRIVER] = 22.5f
+        // Activity replacement: the old screen's check is under way, the new screen checks, then the old one stops late.
+        val older = Any()
+        port.holdValueReads = true
+        climate.checkRecords(older)
+        climate.checkRecords(this) // the newer screen takes the check over
+        climate.stopCheck(older) // the old screen's late onStop
+        assertTrue(climate.state.checking)
+        port.holdValueReads = false
+        port.release() // the old check's answer is dropped, the new one's goes on
+        assertFalse(climate.state.checking)
+        assertTrue(climate.state.open.single { it.prop == ClimateProp.FAN }.checked!!.contains("휴식 목표와 같아요"))
+        port.holdValueReads = true
+        climate.checkRecords(this)
+        port.holdValueReads = false
+        climate.restoreRecords() // the restore reads and writes on its own
+        assertFalse(climate.state.checking)
+        port.release()
+        assertTrue(climate.state.open.all { it.checked == null })
+        assertEquals(22f, port.writes.single().value) // only the restore's own temperature write
+        answer(port.writes[0])
+        answer(port.writes[1])
+        assertTrue(store.groups.isEmpty())
+
+        store.groups = listOf(applied("n"))
+        val next = owner(store)
+        port.holdValueReads = true
+        next.checkRecords(this)
+        port.holdValueReads = false
+        next.onRestStart(both) // a new rest: the open group blocks it, the check is dropped
+        port.release()
+        assertTrue(next.state.open.all { it.checked == null })
+
+        port.holdValueReads = true
+        next.checkRecords(this)
+        next.discardRecords()
+        port.release()
+        assertTrue(store.groups.isEmpty())
+        assertTrue(next.state.open.isEmpty())
+
+        store.groups = listOf(applied("o"))
+        val first = owner(store)
+        port.holdValueReads = true
+        first.checkRecords(this)
+        val second = owner(store) // replaces the owner (lease)
+        val saves = store.saves
+        port.holdValueReads = false
+        port.release()
+        assertTrue(second.state.open.all { it.checked == null })
+        assertEquals(saves, store.saves)
+        assertFalse(second.state.checking)
+        second.checkRecords(this) // checking again is possible after every invalidation
+        assertTrue(second.state.open.all { it.checked != null && it.checked != "차량 설정을 확인하고 있어요" })
+        assertEquals(2, port.writes.size) // nothing beyond the restore above
+    }
+
     @Test
     fun `an SDK error stays in the log - the screen gets the reason in words`() {
         port.caps[ClimateProp.TEMP] = null

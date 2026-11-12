@@ -15,8 +15,11 @@ const val LIGHT_SETTLE_MS = 500L
 
 enum class LightResult { WORKING, APPLIED, SKIPPED, UNKNOWN, RESTORED, HELD, USER_CHANGED, FAILED, LOCKED }
 
-/** One line of the product screens. No raw SDK value or id: brightness original as a number, color as a swatch. */
-data class LightItemUi(val prop: LightProp, val area: String, val original: Int?, val result: LightResult, val text: String)
+/**
+ * One line of the product screens. No raw SDK value or id: brightness original as a number, color as a swatch.
+ * [checked]: what a read-only check of an open record found on the vehicle, in words (display only).
+ */
+data class LightItemUi(val prop: LightProp, val area: String, val original: Int?, val result: LightResult, val text: String, val checked: String? = null)
 
 data class LightingUi(
     /** Resting line of the latest rest. */
@@ -33,6 +36,8 @@ data class LightingUi(
     val problem: String? = null,
     val working: Boolean = false,
     val notice: String? = null,
+    /** A read-only check of the open records is under way. */
+    val checking: Boolean = false,
 )
 
 /**
@@ -103,6 +108,15 @@ class RestLighting(
     private var deferred = false
     private var notice: String? = null
 
+    /** A read-only check's finding for one record, valid only while the record is still [stamp] (same request and stage). */
+    private class Checked(val stamp: String, val text: String)
+    /** jobId → finding. Memory only, never a record and never a command. */
+    private val checked = mutableMapOf<String, Checked>()
+    private var checkSeq = 0
+    private var checkingRecords = false
+    /** The screen (Activity) that started the check: only its own hiding stops it, never an older screen's late onStop. */
+    private var checkOwner: Any? = null
+
     fun start() {
         if (closed || leaseId != 0) return
         leaseId = lease.acquire()
@@ -127,6 +141,7 @@ class RestLighting(
     fun close() {
         if (closed) return
         closed = true
+        dropCheck()
         pending.values.forEach { it.timer.cancel() }
         observers.values.forEach { runCatching { it.close() } }
         observers.clear()
@@ -136,6 +151,81 @@ class RestLighting(
     fun onDebugChanged() {
         if (alive) publish()
     }
+
+    /**
+     * Read-only: the vehicle's brightness or color for every open record, shown next to the original. One read
+     * per record, no polling. Nothing is sent, no record changes, no lock opens, no restore starts. Skipped
+     * without records or while lighting work is under way; a late answer after a change is dropped.
+     */
+    fun checkRecords(owner: Any) {
+        if (!alive || records.isEmpty() || working()) return
+        if (checkingRecords && owner === checkOwner) return // the same screen asked again
+        dropCheck() // another screen's check under way is replaced: the newer screen owns the check
+        val seq = ++checkSeq
+        checkOwner = owner
+        checkingRecords = true
+        val todo = records.toList()
+        log("조명 기록 확인(조회만): ${todo.size}개")
+        publish()
+        /** The record is still exactly as it was when the check began (not deleted, same request and stage). */
+        fun unchanged(r: LightRecord) = record(r.jobId)?.let { stamp(it) == stamp(r) } == true
+        fun step(i: Int) {
+            if (seq != checkSeq || !alive) return
+            if (i == todo.size) {
+                checkingRecords = false
+                return publish()
+            }
+            val r = todo[i]
+            if (!unchanged(r)) return step(i + 1)
+            readOrNull(r.prop, r.area) { v, e ->
+                if (seq != checkSeq) return@readOrNull
+                if (unchanged(r)) checked[r.jobId] = Checked(stamp(r), checkedText(r, v, e))
+                publish()
+                step(i + 1)
+            }
+        }
+        step(0)
+    }
+
+    /** [owner]'s screen is hidden: answers of its check still under way are dropped. Another screen's check goes on. */
+    fun stopCheck(owner: Any) {
+        if (owner !== checkOwner) return
+        if (checkingRecords) log("화면을 벗어나 조명 기록 확인을 멈춤")
+        dropCheck()
+        if (alive) publish()
+    }
+
+    /** Read timers are left to run out; their answers carry an old [checkSeq] and are dropped. */
+    private fun dropCheck() {
+        checkSeq++
+        checkingRecords = false
+        checkOwner = null
+        checked.clear()
+    }
+
+    private fun stamp(r: LightRecord) = "${r.requestId}|${r.stage}|${r.responseReceived}|${r.priorRequestUnresolved}"
+
+    /** What was read, compared with the record's own values. Never called "now": the vehicle may change after the read. */
+    private fun checkedText(r: LightRecord, v: Int?, error: String?): String {
+        if (v == null) return userText("차량 설정을 확인하지 못했어요", error)
+        return if (r.prop == LightProp.BRIGHTNESS) {
+            "확인한 밝기 $v · " + when {
+                LightValues.same(r.prop, v, r.original) -> "원래와 같아요"
+                LightValues.same(r.prop, v, r.target) -> "휴식 목표와 같아요"
+                else -> "원래와 달라요"
+            }
+        } else {
+            // Only alpha 0x00 or 0xFF can be read as a color here (STEP 8); anything else is not compared.
+            if (!LightValues.alphaAllowed(v)) return userText("색을 읽었지만 비교할 수 없는 값이에요", "알 수 없는 색 형식 ${LightValues.hex(v)}")
+            "확인한 색 · " + when {
+                LightValues.same(r.prop, v, r.original) -> "원래 색과 같아요"
+                LightValues.same(r.prop, v, r.target) -> "휴식 목표 색과 같아요"
+                else -> "원래 색과도 휴식 색과도 달라요"
+            }
+        }
+    }
+
+    private fun working() = preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || confirming.isNotEmpty()
 
     /** Losing parking cancels the preparation and remembers every open job of this process (see [parkLost]). */
     fun onParking(next: ParkingState) {
@@ -173,6 +263,7 @@ class RestLighting(
         val id = ++runSeq
         runItems.clear()
         notice = null
+        dropCheck()
         val r = Run(id, line = null)
         run = r
         if (!enabled) {
@@ -235,6 +326,7 @@ class RestLighting(
         val gone = records - keep.toSet()
         if (!persist(keep)) return say("기록을 지우지 못했어요")
         earlierItems.clear()
+        dropCheck()
         gone.forEach { closeObserver(it.jobId) }
         log("사용자가 조명 기록 ${gone.size}개를 지움(차량은 그대로)")
         say(if (keep.isEmpty()) "기록을 지웠어요. 무드등은 지금 상태 그대로예요" else "지울 수 있는 기록만 지웠어요")
@@ -549,6 +641,7 @@ class RestLighting(
     }
 
     private fun enqueue(jobs: List<String>, manual: Boolean) {
+        dropCheck() // a restore makes an earlier read-only finding stale
         jobs.filter { j -> restoreQueue.none { it.jobId == j } && restoring != j }.forEach { restoreQueue += Restore(it, manual) }
         restoreNext()
     }
@@ -780,18 +873,23 @@ class RestLighting(
         state = LightingUi(
             restLine = r?.let { line(it) },
             items = runItems.values.toList(),
-            open = records.map { rec -> LightItemUi(rec.prop, rec.area, rec.original, resultOf(rec), textOf(rec)) },
+            open = records.map { rec -> LightItemUi(rec.prop, rec.area, rec.original, resultOf(rec), textOf(rec), checkedLine(rec)) },
             earlier = earlierItems.values.toList(),
             restoreBlock = if (records.isEmpty()) null else restoreBlock(),
             discardBlock = if (records.isEmpty()) null else discardBlock(),
             deferred = deferred,
             problem = loadProblem?.let { "무드등 기록 파일을 읽을 수 없어요. 파일을 그대로 두고 무드등 조정을 멈췄어요" }
                 ?: storageFault?.let { "무드등 기록을 저장할 수 없어요. 무드등 조정을 멈췄어요" },
-            working = preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || confirming.isNotEmpty(),
+            working = working(),
             notice = notice,
+            checking = checkingRecords,
         )
         onState(state)
     }
+
+    /** A finding is shown only for the record exactly as it was read (same request and stage); otherwise it is stale. */
+    private fun checkedLine(r: LightRecord): String? =
+        checked[r.jobId]?.takeIf { it.stamp == stamp(r) }?.text ?: if (checkingRecords) "차량 설정을 확인하고 있어요" else null
 
     private fun line(r: Run): String? {
         r.line?.let { return it }

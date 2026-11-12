@@ -15,8 +15,11 @@ const val CLIMATE_SETTLE_MS = 500L
 
 enum class ClimateResult { WORKING, APPLIED, SKIPPED, UNKNOWN, RESTORED, HELD, EXTERNAL, FAILED, LOCKED }
 
-/** A line of the product screens. [prop] null = the group's auto mode. No ids or SDK names. */
-data class ClimateItemUi(val prop: ClimateProp?, val area: String, val original: String?, val result: ClimateResult, val text: String)
+/**
+ * A line of the product screens. [prop] null = the group's auto mode. No ids or SDK names.
+ * [checked]: what a read-only check of an open record found on the vehicle, in words (display only).
+ */
+data class ClimateItemUi(val prop: ClimateProp?, val area: String, val original: String?, val result: ClimateResult, val text: String, val checked: String? = null)
 
 data class TempRange(val min: Float, val max: Float, val increment: Float)
 
@@ -38,6 +41,8 @@ data class ClimateUi(
     val tempRange: TempRange? = null,
     val tempRangeLoading: Boolean = false,
     val tempRangeProblem: String? = null,
+    /** A read-only check of the open records is under way. */
+    val checking: Boolean = false,
 )
 
 /**
@@ -116,6 +121,15 @@ class RestClimate(
     private var tempRangeLoading = false
     private var tempRangeProblem: String? = null
 
+    /** A read-only check's finding for one line, valid only while the record is still [stamp] (same requests and stages). */
+    private class Checked(val stamp: String, val text: String)
+    /** Member key or "group|AUTO" → finding. Memory only, never a record and never a command. */
+    private val checked = mutableMapOf<String, Checked>()
+    private var checkSeq = 0
+    private var checkingRecords = false
+    /** The screen (Activity) that started the check: only its own hiding stops it, never an older screen's late onStop. */
+    private var checkOwner: Any? = null
+
     fun start() {
         if (closed || leaseId != 0) return
         leaseId = lease.acquire()
@@ -140,6 +154,7 @@ class RestClimate(
     fun close() {
         if (closed) return
         closed = true
+        dropCheck()
         pending.values.forEach { it.timer.cancel() }
         observers.values.forEach { runCatching { it.close() } }
         observers.clear()
@@ -190,6 +205,105 @@ class RestClimate(
         if (alive) publish()
     }
 
+    /**
+     * Read-only: every open group's fan and driver temperature and its power, auto and Sync states, shown next to
+     * the originals. One read each, no polling. Nothing is sent, no record changes, no lock opens, no restore
+     * starts. Skipped without records or while climate work is under way; a late answer after a change is dropped.
+     */
+    fun checkRecords(owner: Any) {
+        if (!alive || groups.isEmpty() || working()) return
+        if (checkingRecords && owner === checkOwner) return // the same screen asked again
+        dropCheck() // another screen's check under way is replaced: the newer screen owns the check
+        val seq = ++checkSeq
+        checkOwner = owner
+        checkingRecords = true
+        val todo = groups.toList()
+        log("공조 기록 확인(조회만): 그룹 ${todo.size}개")
+        publish()
+        fun current() = seq == checkSeq && alive
+        /** The group is still exactly as it was when the check began (not deleted, same requests and stages). */
+        fun unchanged(g: ClimateGroup) = group(g.groupId)?.let { autoStamp(it) == autoStamp(g) } == true
+        fun next(i: Int) {
+            if (!current()) return
+            if (i == todo.size) {
+                checkingRecords = false
+                return publish()
+            }
+            val g = todo[i]
+            if (!unchanged(g)) return next(i + 1)
+            fun member(j: Int) {
+                if (!current()) return
+                if (!unchanged(g)) return next(i + 1)
+                if (j == g.members.size) {
+                    return readShared(g.powerArea, g.autoArea, g.dualArea, guard = ::current) { shared ->
+                        if (unchanged(g)) checked["${g.groupId}|AUTO"] = Checked(autoStamp(g), sharedText(g, shared))
+                        publish()
+                        next(i + 1)
+                    }
+                }
+                val m = g.members[j]
+                readOrNull(m.prop, m.area) { v, e ->
+                    if (!current()) return@readOrNull
+                    if (unchanged(g)) checked[key(g.groupId, m.prop, m.area)] = Checked(memberStamp(g, m), checkedText(m, v, e))
+                    publish()
+                    member(j + 1)
+                }
+            }
+            member(0)
+        }
+        next(0)
+    }
+
+    /** [owner]'s screen is hidden: answers of its check still under way are dropped. Another screen's check goes on. */
+    fun stopCheck(owner: Any) {
+        if (owner !== checkOwner) return
+        if (checkingRecords) log("화면을 벗어나 공조 기록 확인을 멈춤")
+        dropCheck()
+        if (alive) publish()
+    }
+
+    /** Read timers are left to run out; their answers carry an old [checkSeq] and are dropped. */
+    private fun dropCheck() {
+        checkSeq++
+        checkingRecords = false
+        checkOwner = null
+        checked.clear()
+    }
+
+    private fun memberStamp(g: ClimateGroup, m: ClimateMember) = "${g.stage}|${g.locked}|${m.requestId}|${m.stage}|${m.responseReceived}"
+
+    /** The whole group: its stage and locks, the auto request and every member's request, stage and answer. */
+    private fun autoStamp(g: ClimateGroup) =
+        "${g.stage}|${g.locked}|${g.priorRequestUnresolved}|${g.autoRequestId}|${g.autoResponseReceived}|${g.members.joinToString { "${it.requestId}|${it.stage}|${it.responseReceived}" }}"
+
+    /** What was read, compared with the record's own values. Never called "now": the vehicle may change after the read. */
+    private fun checkedText(m: ClimateMember, v: Float?, error: String?): String {
+        if (v == null) return userText("차량 설정을 확인하지 못했어요", error)
+        return "확인한 설정 ${ClimateValues.show(m.prop, v)}${unit(m.prop)} · " + when {
+            ClimateValues.same(m.prop, v, m.original) -> "원래와 같아요"
+            ClimateValues.same(m.prop, v, m.target) -> "휴식 목표와 같아요"
+            else -> "원래와 달라요"
+        }
+    }
+
+    private fun sharedText(g: ClimateGroup, shared: Map<Side, Boolean?>): String {
+        if (shared.values.all { it == null }) return "공조 상태를 확인하지 못했어요"
+        fun state(v: Boolean?) = v?.let { onOff(it) } ?: "확인하지 못함"
+        val auto = shared[Side.AUTO]
+        return (
+            listOf(
+                "확인한 자동 모드 ${state(auto)}" + when (auto) {
+                    null -> ""
+                    g.autoOriginal -> "(휴식 전과 같아요)"
+                    else -> "(휴식 전과 달라요)"
+                },
+                "공조 전원 ${state(shared[Side.POWER])}",
+            ) + listOfNotNull(g.dualArea?.let { "연동(Sync) ${state(shared[Side.DUAL])}" })
+            ).joinToString(" · ")
+    }
+
+    private fun working() = preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || confirming.isNotEmpty()
+
     /** For the debug tools. */
     fun busyReason(): String? = when {
         !alive -> null
@@ -205,6 +319,7 @@ class RestClimate(
         val id = ++runSeq
         runItems.clear()
         notice = null
+        dropCheck()
         val r = Run(id, line = null)
         run = r
         if (!choice.fan) mark(ClimateProp.FAN, "", null, ClimateResult.SKIPPED, "바람 줄이기를 꺼 두었어요")
@@ -266,6 +381,7 @@ class RestClimate(
         val gone = groups - keep.toSet()
         if (!persist(keep)) return say("기록을 지우지 못했어요")
         earlierItems.clear()
+        dropCheck()
         gone.forEach { g -> g.members.forEach { closeObserver(key(g.groupId, it.prop, it.area)) } }
         log("사용자가 공조 기록 ${gone.size}개를 지움(차량은 그대로)")
         say(if (keep.isEmpty()) "기록을 지웠어요. 공조는 지금 상태 그대로예요" else "지울 수 있는 기록만 지웠어요")
@@ -717,6 +833,7 @@ class RestClimate(
     }
 
     private fun enqueue(jobs: List<String>, manual: Boolean) {
+        dropCheck() // a restore makes an earlier read-only finding stale
         jobs.filter { j -> restoreQueue.none { it.groupId == j } && restoring?.groupId != j }.forEach { restoreQueue += Job(it, manual) }
         restoreNext()
     }
@@ -1154,8 +1271,9 @@ class RestClimate(
             restLine = run?.let { line(it) },
             items = runItems.values.toList(),
             open = groups.flatMap { g ->
-                g.members.map { m -> ClimateItemUi(m.prop, m.area, originalText(m.prop, m.original), resultOf(g), textOf(g, m)) } +
-                    ClimateItemUi(null, g.autoArea, "원래 자동 ${onOff(g.autoOriginal)}", resultOf(g), autoTextOf(g))
+                g.members.map { m ->
+                    ClimateItemUi(m.prop, m.area, originalText(m.prop, m.original), resultOf(g), textOf(g, m), checkedLine(key(g.groupId, m.prop, m.area), memberStamp(g, m)))
+                } + ClimateItemUi(null, g.autoArea, "원래 자동 ${onOff(g.autoOriginal)}", resultOf(g), autoTextOf(g), checkedLine("${g.groupId}|AUTO", autoStamp(g)))
             },
             earlier = earlierItems.values.toList(),
             restoreBlock = if (groups.isEmpty()) null else restoreBlock(),
@@ -1163,14 +1281,19 @@ class RestClimate(
             deferred = deferred,
             problem = loadProblem?.let { "공조 기록 파일을 읽을 수 없어요. 파일을 그대로 두고 공조 조정을 멈췄어요" }
                 ?: storageFault?.let { "공조 기록을 저장할 수 없어요. 공조 조정을 멈췄어요" },
-            working = preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || confirming.isNotEmpty(),
+            working = working(),
             notice = notice,
             tempRange = tempRange,
             tempRangeLoading = tempRangeLoading,
             tempRangeProblem = tempRangeProblem,
+            checking = checkingRecords,
         )
         onState(state)
     }
+
+    /** A finding is shown only for the line exactly as it was read (same requests and stages); otherwise it is stale. */
+    private fun checkedLine(k: String, stamp: String): String? =
+        checked[k]?.takeIf { it.stamp == stamp }?.text ?: if (checkingRecords) "차량 설정을 확인하고 있어요" else null
 
     private fun line(r: Run): String? {
         r.line?.let { return it }

@@ -95,6 +95,9 @@ class RestActions(
     val discardClimate: () -> Unit,
     val deferClimate: () -> Unit,
     val showClimate: () -> Unit,
+    /** [다시 확인]: read-only check of the vehicle's values for the records left. */
+    val checkLighting: () -> Unit,
+    val checkClimate: () -> Unit,
     /** Debug builds only; never shown while resting. */
     val openDevTools: (() -> Unit)?,
 )
@@ -311,6 +314,7 @@ private fun LightingRecords(lighting: LightingUi, actions: RestActions) {
     Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("원래대로 돌리지 않은 무드등이 있어요", color = Warn, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
         LightLines(lighting.open)
+        CheckRow(lighting.checking, lighting.open.any { it.checked != null }, enabled = !lighting.checking && !lighting.working, onCheck = actions.checkLighting)
         Text("이 항목은 정리할 때까지 다음 휴식에서도 바꾸지 않아요.", color = TextSub, fontSize = 20.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             SmallButton("원래대로", enabled = lighting.restoreBlock == null, primary = true, onClick = actions.restoreLighting)
@@ -363,7 +367,29 @@ private fun LightLines(items: List<LightItemUi>) {
                 },
                 fontSize = 20.sp,
             )
+            item.checked?.let { Text(it, color = TextMain, fontSize = 20.sp) }
         }
+    }
+}
+
+/**
+ * What was read from the vehicle for the records, and [다시 확인] (read only). A finding is the value at the
+ * moment it was read; [원래대로] reads again right before it writes.
+ */
+@Composable
+private fun CheckRow(checking: Boolean, hasFindings: Boolean, enabled: Boolean, onCheck: () -> Unit) {
+    Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            when {
+                checking -> "차량 설정을 확인하고 있어요"
+                hasFindings -> "확인한 설정은 확인한 순간의 값이에요. [원래대로]는 누를 때 다시 확인해요."
+                else -> "차량 설정을 아직 확인하지 않았어요"
+            },
+            Modifier.weight(1f),
+            color = TextSub,
+            fontSize = 20.sp,
+        )
+        SmallButton("다시 확인", enabled = enabled, onClick = onCheck)
     }
 }
 
@@ -430,6 +456,7 @@ private fun ClimateRecords(climate: ClimateUi, actions: RestActions) {
     Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("원래대로 돌리지 않은 공조 설정이 있어요", color = Warn, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
         ClimateLines(climate.open)
+        CheckRow(climate.checking, climate.open.any { it.checked != null }, enabled = !climate.checking && !climate.working, onCheck = actions.checkClimate)
         Text("이 공조는 정리할 때까지 다음 휴식에서도 바꾸지 않아요. [원래대로]는 꺼진 공조를 켜지 않아요.", color = TextSub, fontSize = 20.sp)
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             SmallButton("원래대로", enabled = climate.restoreBlock == null, primary = true, onClick = actions.restoreClimate)
@@ -475,6 +502,7 @@ private fun ClimateLines(items: List<ClimateItemUi>) {
                 },
                 fontSize = 20.sp,
             )
+            item.checked?.let { Text(it, color = TextMain, fontSize = 20.sp) }
         }
     }
 }
