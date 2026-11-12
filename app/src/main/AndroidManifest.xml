@@ -1,10 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-feature android:name="android.hardware.type.automotive" android:required="true" />
-    <uses-permission android:name="pleos.car.permission.CAR_DOORS" />
-    <uses-permission android:name="pleos.car.permission.CAR_LIGHTS" />
-    <uses-permission android:name="android.car.permission.CAR_POWERTRAIN" />
-
-    <application android:label="쉼표 캐빈" android:theme="@style/CabinTheme" android:allowBackup="false">
+    <application android:label="Comma Cabin" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

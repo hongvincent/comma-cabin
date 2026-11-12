@@ -5,11 +5,10 @@ plugins {
 android {
     namespace = "app.commacabin"
     compileSdk = 34
-    useLibrary("android.car")
 
     defaultConfig {
         applicationId = "app.commacabin"
-        minSdk = 28 // Packaging floor. The verified Pleos image provides the API 34 car library.
+        minSdk = 28
         targetSdk = 34
         versionCode = 2
         versionName = "0.2.0"
@@ -19,14 +18,4 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-
-    buildTypes {
-        release {
-            minifyEnabled = false
-        }
-    }
-}
-
-dependencies {
-    implementation("ai.pleos.playground:Vehicle:2.3.2")
 }
