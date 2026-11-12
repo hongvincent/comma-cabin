@@ -8,6 +8,7 @@ enum class Feature(val label: String) {
     DOOR_POSITION("조수석 문 위치"),
     SEAT_BACKREST_POSITION("운전석 등받이 위치"),
     SEAT_BACKREST_MOVE("등받이 이동 지원(조회만)"),
+    SEAT_MEMORY_SUPPORT("시트 프리셋 지원(조회만)"),
     HVAC_POWER("공조 전원"),
     HVAC_AUTO("공조 자동"),
     HVAC_DUAL("공조 듀얼"),

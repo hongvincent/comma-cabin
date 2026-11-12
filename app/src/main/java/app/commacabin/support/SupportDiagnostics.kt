@@ -82,6 +82,7 @@ class SupportDiagnostics(
             { next -> checkFeature(thisRun, Feature.DOOR_POSITION, { it == DOOR_TARGET }, observe = true, next) },
             { next -> checkFeature(thisRun, Feature.SEAT_BACKREST_POSITION, { it.split('+').contains(DRIVER_SEAT) }, observe = true, next) },
             { next -> checkFeature(thisRun, Feature.SEAT_BACKREST_MOVE, null, observe = false, next) },
+            { next -> checkFeature(thisRun, Feature.SEAT_MEMORY_SUPPORT, null, observe = false, next) },
             { next -> checkFeature(thisRun, Feature.HVAC_POWER, { true }, observe = false, next) },
             { next -> checkFeature(thisRun, Feature.HVAC_AUTO, { true }, observe = false, next) },
             { next -> checkFeature(thisRun, Feature.HVAC_DUAL, { true }, observe = false, next) },

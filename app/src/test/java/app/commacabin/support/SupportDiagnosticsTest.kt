@@ -23,6 +23,8 @@ private class FakeReadPort : VehicleReadPort {
     val listeners = mutableMapOf<Pair<Feature, String>, (String?) -> Unit>()
     val errorListeners = mutableMapOf<Pair<Feature, String>, (ProbeError) -> Unit>()
     var closedObservers = 0
+    val currentCalls = mutableListOf<Feature>()
+    val observeCalls = mutableListOf<Feature>()
 
     override fun capability(feature: Feature, ok: (CapabilityResult) -> Unit, err: (ProbeError) -> Unit) {
         val answer = {
@@ -33,11 +35,13 @@ private class FakeReadPort : VehicleReadPort {
     }
 
     override fun current(feature: Feature, area: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit) {
+        currentCalls += feature
         val answer = { ok(values[feature to area]) }
         if (feature in silent || feature in heldCurrent) held += answer else answer()
     }
 
     override fun observe(feature: Feature, area: String, onUpdate: (String?) -> Unit, onError: (ProbeError) -> Unit): AutoCloseable? {
+        observeCalls += feature
         if (feature != Feature.DOOR_POSITION && feature != Feature.SEAT_BACKREST_POSITION) return null
         if (feature in observeThrows) throw SecurityException("register denied")
         listeners[feature to area] = onUpdate
@@ -58,6 +62,7 @@ class SupportDiagnosticsTest {
         port.caps[Feature.DOOR_POSITION] = CapabilityResult(Access.READ_WRITE, listOf(AreaBound("ROW_1_LEFT", "0", "1"), AreaBound("ROW_1_RIGHT", "0", "1")))
         port.caps[Feature.SEAT_BACKREST_POSITION] = CapabilityResult(Access.READ, listOf(AreaBound(driver, "0", "100")))
         port.caps[Feature.SEAT_BACKREST_MOVE] = CapabilityResult(Access.WRITE, listOf(AreaBound(driver)))
+        port.caps[Feature.SEAT_MEMORY_SUPPORT] = CapabilityResult(Access.READ_WRITE, listOf(AreaBound(driver, "1", "2")))
         for (f in listOf(Feature.HVAC_POWER, Feature.HVAC_AUTO, Feature.HVAC_DUAL)) {
             port.caps[f] = CapabilityResult(Access.READ_WRITE, listOf(AreaBound(dual)))
         }
@@ -93,6 +98,21 @@ class SupportDiagnosticsTest {
 
         port.listeners.getValue(Feature.DOOR_POSITION to "ROW_1_RIGHT").invoke("1")
         assertEquals("1", diagnostics.state.events.single().value)
+    }
+
+    @Test
+    fun `seat preset support is capability only - its range is shown, it is never read or subscribed, and the run goes on`() {
+        allSupported()
+        diagnostics.startAll()
+
+        val cap = rows(Feature.SEAT_MEMORY_SUPPORT, RowKind.CAPABILITY).single()
+        assertEquals(RowStatus.OK, cap.status)
+        assertEquals("접근 READ_WRITE, 영역 [ROW_1_LEFT:1..2]", cap.detail)
+        assertTrue(rows(Feature.SEAT_MEMORY_SUPPORT, RowKind.CURRENT).isEmpty())
+        assertTrue(Feature.SEAT_MEMORY_SUPPORT !in port.currentCalls)
+        assertTrue(Feature.SEAT_MEMORY_SUPPORT !in port.observeCalls)
+        assertEquals(listOf("22.0"), rows(Feature.HVAC_TEMPERATURE, RowKind.CURRENT).map { it.detail }) // later steps still run
+        assertFalse(diagnostics.state.running)
     }
 
     @Test

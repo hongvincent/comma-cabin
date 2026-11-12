@@ -105,7 +105,11 @@
   - SDK 라이브러리 자체의 결함으로 단정하지 않는다. 로그로 확인한 범위는 다음뿐이다: VHAL의 revised 값이 0.01 이하였고, SDK getter·서비스 로그의 값이 0이었다.
 - **대안 후보(미검증)**:
   - 설치된 SDK에는 `selectSeatMemory(SeatArea, Int, onFailed)`와 `checkSeatMemoryCapabilities`가 있다. 차량 설정 앱에는 운전자 프리셋 1·2가 있다.
-  - capability 조회, 실제 호출, 프리셋 저장·복귀 계약은 확인하지 않았다. 이 경로가 구현 불가하다고 정하지 않는다.
+  - STEP 14(2026-11-13)에서 capability만 조회했다. `checkSeatMemoryCapabilities` 결과: 접근 **WRITE**, 운전석(`ROW_1_LEFT`) **1~2**.
+    - 서비스 원문: `SEAT_MEMORY_SELECT`, `access 2`, `propertyId 356518784`, `supportedAreas {"1": min 1, max 2}`.
+    - 프리셋 선택·저장·이동은 호출하지 않았다. 차량 쓰기는 0건이다.
+    - 공개 SDK 타입에는 프리셋 저장 메서드와 현재 프리셋 번호 조회가 보이지 않는다(접근도 WRITE뿐이다).
+  - 선택 결과 확인, 저장, 원래 자세로 되돌리는 계약은 아직 확인하지 않았다. 이 경로가 구현 불가하다고 정하지 않는다.
 - 증거: `app/build/reports/seat-recheck/`(`logs/f0~f10`, `docs/official-docs-summary.md`), 보고 `app/build/reports/pm-live/step13-report.md`.
 
 ### 4-2. 무드등 색

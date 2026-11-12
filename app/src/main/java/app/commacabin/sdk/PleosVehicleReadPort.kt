@@ -41,6 +41,10 @@ class PleosVehicleReadPort(private val vehicle: Vehicle, private val main: Handl
                 Feature.SEAT_BACKREST_MOVE -> vehicle.getSeat().checkMoveSeatBackrestAngleCapabilities({ config, list ->
                     done(config, list.map { AreaBound(key(it)) })
                 }, fail)
+                // Capability only: the SDK's bounds as they are, no select/save call.
+                Feature.SEAT_MEMORY_SUPPORT -> vehicle.getSeat().checkSeatMemoryCapabilities({ config, map ->
+                    done(config, map.map { (a, b) -> AreaBound(key(a), b.minValue.toString(), b.maxValue.toString()) })
+                }, fail)
                 Feature.HVAC_POWER -> vehicle.getHVAC().checkHvacPowerCapabilities({ config, list ->
                     done(config, list.map { AreaBound(key(it)) })
                 }, fail)
@@ -80,6 +84,7 @@ class PleosVehicleReadPort(private val vehicle: Vehicle, private val main: Handl
                     main.post { ok(v?.let { String.format(Locale.ROOT, "0x%08X (raw %d)", it, it) }) }
                 }, fail)
                 Feature.SEAT_BACKREST_MOVE -> main.post { err(ProbeError("not-read", "이동 기능은 현재값을 조회하지 않음", null)) }
+                Feature.SEAT_MEMORY_SUPPORT -> main.post { err(ProbeError("not-read", "프리셋 기능은 현재값을 조회하지 않음", null)) }
             }
         }
     }
