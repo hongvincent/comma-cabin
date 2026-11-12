@@ -1,0 +1,32 @@
+plugins {
+    id "com.android.application" version "8.8.2"
+}
+
+android {
+    namespace = "app.commacabin"
+    compileSdk = 34
+    useLibrary("android.car")
+
+    defaultConfig {
+        applicationId = "app.commacabin"
+        minSdk = 28
+        targetSdk = 34
+        versionCode = 1
+        versionName = "0.1.0"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled = false
+        }
+    }
+}
+
+dependencies {
+    implementation("ai.pleos.playground:Vehicle:2.3.2")
+}
