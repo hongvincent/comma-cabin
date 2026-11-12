@@ -10,7 +10,13 @@
     <uses-permission android:name="pleos.car.permission.CAR_SEATS" />
     <uses-permission android:name="pleos.car.permission.CAR_CLIMATE" />
     <uses-permission android:name="pleos.car.permission.TTS_SERVICE" />
-    <application android:label="Comma Cabin" android:theme="@android:style/Theme.Material.NoActionBar" android:allowBackup="false">
+    <application
+        android:label="Comma Cabin"
+        android:theme="@android:style/Theme.Material.NoActionBar"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
+        tools:targetApi="31">
         <activity
             android:name=".MainActivity"
             android:exported="true"

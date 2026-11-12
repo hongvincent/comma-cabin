@@ -26,6 +26,8 @@ android {
 
     buildFeatures {
         compose true
+        // BuildConfig.DEBUG keeps the development diagnostics out of release builds.
+        buildConfig true
     }
 }
 
