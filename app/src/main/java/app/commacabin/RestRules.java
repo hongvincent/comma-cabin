@@ -14,7 +14,7 @@ final class RestRules {
     enum End { DEADLINE, PASSENGER_DOOR, DRIVE_RESTRICTION, SIGNAL_LOST, MANUAL, BACKGROUND, AUDIO_INTERRUPTED }
 
     private RestRules() {}
-
+    // The picker has no date. Only the late-night window can roll a pickup into tomorrow.
     static Instant endAt(Instant now, ZoneId zone, LocalTime pickup) {
         ZonedDateTime current = now.atZone(zone);
         ZonedDateTime appointment = current.toLocalDate().atTime(pickup).atZone(zone);
