@@ -630,4 +630,20 @@ class ControlBenchTest {
         assertTrue(ControlCodec.decode(ControlCodec.encode(listOf(color, seat.copy(jobId = "j")))) is ControlLoad.Unreadable)
         assertTrue(ControlCodec.decode(ControlCodec.encode(listOf(color, seat.copy(requestId = "r")))) is ControlLoad.Unreadable)
     }
+
+    @Test
+    fun `product lighting work or records block the bench's vehicle writes but not the seat STOP`() {
+        var product: String? = "휴식 무드등을 맞추거나 되돌리는 중이에요"
+        val b = ControlBench(port, MemoryStore(), scheduler, { parking }, { door }, { false }, { scheduler.now }, RecordLease(), externalBlock = { product }).also { it.start(); it.onVisible() }
+        b.apply(ControlProp.AMBIENT_COLOR)
+        b.exploreSeat(Move.BACKWARD)
+        assertTrue(port.writes.isEmpty())
+        assertTrue(port.moves.isEmpty())
+
+        product = null
+        b.exploreSeat(Move.BACKWARD)
+        product = "busy"
+        b.stopSeat("수동")
+        assertEquals(listOf("BACKWARD", "STOP"), port.moves.map { it.what })
+    }
 }

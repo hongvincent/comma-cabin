@@ -11,16 +11,22 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -34,6 +40,10 @@ import app.commacabin.audio.Announce
 import app.commacabin.audio.AudioUi
 import app.commacabin.audio.SoundLevel
 import app.commacabin.audio.SoundMode
+import app.commacabin.lighting.LightItemUi
+import app.commacabin.lighting.LightProp
+import app.commacabin.lighting.LightResult
+import app.commacabin.lighting.LightingUi
 import app.commacabin.rest.Block
 import app.commacabin.rest.EndKind
 import app.commacabin.rest.PREP_MARGIN_MS
@@ -64,12 +74,17 @@ class RestActions(
     val restAgain: () -> Unit,
     val setSound: (SoundMode) -> Unit,
     val setLevel: (SoundLevel) -> Unit,
+    val setLighting: (Boolean) -> Unit,
+    val restoreLighting: () -> Unit,
+    val discardLighting: () -> Unit,
+    val deferLighting: () -> Unit,
+    val showLighting: () -> Unit,
     /** Debug builds only; never shown while resting. */
     val openDevTools: (() -> Unit)?,
 )
 
 @Composable
-fun RestScreen(state: RestState, audio: AudioUi, actions: RestActions) {
+fun RestScreen(state: RestState, audio: AudioUi, lighting: LightingUi, actions: RestActions) {
     Box(
         Modifier
             .fillMaxSize()
@@ -94,9 +109,9 @@ fun RestScreen(state: RestState, audio: AudioUi, actions: RestActions) {
         ) {
             when (state.screen) {
                 Screen.ONBOARDING -> Onboarding(actions)
-                Screen.READY -> Ready(state, actions)
-                Screen.RESTING -> if (state.dimmed) DimmedRest(state) else Resting(state, audio, actions)
-                Screen.ENDED -> Ended(state, audio, actions)
+                Screen.READY -> Ready(state, lighting, actions)
+                Screen.RESTING -> if (state.dimmed) DimmedRest(state) else Resting(state, audio, lighting, actions)
+                Screen.ENDED -> Ended(state, audio, lighting, actions)
             }
         }
         val dev = actions.openDevTools
@@ -117,12 +132,13 @@ private fun Onboarding(actions: RestActions) {
         Bullet("조수석 문이 열리거나, 기어가 P에서 바뀌거나, 앱 화면을 벗어나면 바로 끝나요.")
         Bullet("휴식 소리를 켜거나 조용히 쉴 수 있어요. 휴식 소리는 끝나기 1분 전부터 점점 작아져요.")
         Bullet("제시간에 끝나면 안내음과 음성으로 알려 드려요. 통화 중처럼 다른 소리가 있거나 소리를 낼 수 없으면 화면으로만 알려요. 깨워 드리는 것을 보장하지는 않아요.")
+        Bullet("[무드등 조정]을 켜 두면 쉬는 동안 무드등을 낮추고 따뜻한 색으로 바꿔요. 휴식이 끝나면 원래대로 돌려요. 무드등이 꺼져 있으면 건드리지 않고, 쉬는 중에 직접 바꾼 값은 그대로 둬요. 준비 화면에서 끌 수 있어요.")
     }
     PrimaryButton("확인했어요", enabled = true, onClick = actions.dismissOnboarding)
 }
 
 @Composable
-private fun Ready(state: RestState, actions: RestActions) {
+private fun Ready(state: RestState, lighting: LightingUi, actions: RestActions) {
     Text("휴식 준비", color = TextMain, fontSize = 44.sp, fontWeight = FontWeight.Bold)
     Column(Modifier.background(Card, RoundedCornerShape(20.dp)).padding(32.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("픽업 시각", color = TextSub, fontSize = 24.sp)
@@ -152,8 +168,109 @@ private fun Ready(state: RestState, actions: RestActions) {
         Check(state.timeBlock, "쉴 시간 충분")
     }
     SoundChoice(state, actions)
+    LightingChoice(state, actions)
+    LightingRecordsOrEntry(lighting, actions)
+    lighting.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
     PrimaryButton("쉬기 시작", enabled = state.canStart, onClick = actions.start)
     state.notice?.let { Text(it, color = Warn, fontSize = 24.sp) }
+}
+
+/** [무드등 조정] on/off. Only remembered here; the vehicle is read and written only after a rest really starts. */
+@Composable
+private fun LightingChoice(state: RestState, actions: RestActions) {
+    Column(Modifier.background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("무드등 조정", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+            Spacer(Modifier.weight(1f))
+            Toggle("켬", state.lighting) { actions.setLighting(true) }
+            Toggle("끔", !state.lighting) { actions.setLighting(false) }
+        }
+        Text("무드등을 낮추고 따뜻하게 맞춰요. 끝나면 원래대로 돌려요.", color = TextSub, fontSize = 20.sp)
+    }
+}
+
+/** The records card, or after [나중에] a small entry that unfolds it again (display only). */
+@Composable
+private fun LightingRecordsOrEntry(lighting: LightingUi, actions: RestActions) {
+    if (lighting.open.isEmpty()) return
+    if (!lighting.deferred) return LightingRecords(lighting, actions)
+    TextButton(onClick = actions.showLighting, modifier = Modifier.heightIn(min = 64.dp)) {
+        Text("남은 무드등 기록 보기 (${lighting.open.size}개)", color = Warn, fontSize = 22.sp)
+    }
+}
+
+/** Records not cleaned up: [원래대로] [기록 지우기] (with a confirmation) [나중에]. */
+@Composable
+private fun LightingRecords(lighting: LightingUi, actions: RestActions) {
+    var confirm by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Text("원래대로 돌리지 않은 무드등이 있어요", color = Warn, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+        LightLines(lighting.open)
+        Text("이 항목은 정리할 때까지 다음 휴식에서도 바꾸지 않아요.", color = TextSub, fontSize = 20.sp)
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            SmallButton("원래대로", enabled = lighting.restoreBlock == null, primary = true, onClick = actions.restoreLighting)
+            SmallButton("기록 지우기", enabled = lighting.discardBlock == null) { confirm = true }
+            SmallButton("나중에", enabled = true, onClick = actions.deferLighting)
+        }
+        (lighting.restoreBlock ?: lighting.discardBlock)?.let { Text(it, color = TextSub, fontSize = 20.sp) }
+        lighting.notice?.let { Text(it, color = TextMain, fontSize = 20.sp) }
+    }
+    if (confirm) {
+        AlertDialog(
+            onDismissRequest = { confirm = false },
+            title = { Text("기록만 지울까요?") },
+            text = { Text("기록을 지워도 무드등은 되돌아가지 않아요. 지금 상태 그대로 남고, 필요하면 차량 설정에서 직접 맞춰야 해요.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirm = false
+                    actions.discardLighting()
+                }) { Text("기록 지우기") }
+            },
+            dismissButton = { TextButton(onClick = { confirm = false }) { Text("취소") } },
+        )
+    }
+}
+
+@Composable
+private fun LightLines(items: List<LightItemUi>) {
+    items.forEach { item ->
+        val sameProp = items.filter { it.prop == item.prop && it.area.isNotEmpty() }
+        val label = item.prop.label + if (sameProp.size > 1) " ${sameProp.indexOf(item) + 1}" else ""
+        Row(horizontalArrangement = Arrangement.spacedBy(14.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = TextMain, fontSize = 22.sp)
+            item.original?.let { original ->
+                if (item.prop == LightProp.BRIGHTNESS) {
+                    Text("원래 $original", color = TextSub, fontSize = 20.sp)
+                } else {
+                    Text("원래 색", color = TextSub, fontSize = 20.sp)
+                    Box(Modifier.size(28.dp).background(Color(0xFF000000 or (original.toLong() and 0xFFFFFF)), RoundedCornerShape(6.dp)))
+                }
+            }
+            Text(
+                item.text,
+                color = when (item.result) {
+                    LightResult.RESTORED, LightResult.APPLIED -> Accent
+                    LightResult.SKIPPED, LightResult.WORKING -> TextSub
+                    else -> Warn
+                },
+                fontSize = 20.sp,
+            )
+        }
+    }
+}
+
+@Composable
+private fun SmallButton(label: String, enabled: Boolean, primary: Boolean = false, onClick: () -> Unit) {
+    val modifier = Modifier.heightIn(min = 80.dp).widthIn(min = 160.dp)
+    if (primary) {
+        Button(onClick = onClick, enabled = enabled, modifier = modifier, colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent, disabledContainerColor = Card, disabledContentColor = TextSub)) {
+            Text(label, fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
+        }
+    } else {
+        OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier, colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMain)) {
+            Text(label, fontSize = 22.sp)
+        }
+    }
 }
 
 /** Rest sound on/quiet and its level. Quiet only turns the rest sound off; the end announcement still plays when possible. */
@@ -174,7 +291,7 @@ private fun SoundChoice(state: RestState, actions: RestActions) {
 }
 
 @Composable
-private fun Resting(state: RestState, audio: AudioUi, actions: RestActions) {
+private fun Resting(state: RestState, audio: AudioUi, lighting: LightingUi, actions: RestActions) {
     Text(
         if (state.finalMinute) "곧 끝나요" else "쉬는 중",
         color = if (state.finalMinute) Warn else Accent,
@@ -184,6 +301,7 @@ private fun Resting(state: RestState, audio: AudioUi, actions: RestActions) {
     Text(remaining(state.remainingMs), color = TextMain, fontSize = 140.sp, fontWeight = FontWeight.Bold)
     state.session?.let { Text("${clock(it.endWallMs, state.nowMs, state.zone)}에 끝나요", color = TextMain, fontSize = 30.sp) }
     if (audio.pausedByOther) Text("다른 소리 때문에 휴식 소리를 잠시 멈췄어요", color = Warn, fontSize = 24.sp)
+    lighting.restLine?.let { Text(it, color = TextSub, fontSize = 24.sp) }
     SoundChoice(state, actions)
     state.notice?.let { Text(it, color = Warn, fontSize = 24.sp) }
     Spacer(Modifier.height(8.dp))
@@ -202,7 +320,7 @@ private fun DimmedRest(state: RestState) {
 }
 
 @Composable
-private fun Ended(state: RestState, audio: AudioUi, actions: RestActions) {
+private fun Ended(state: RestState, audio: AudioUi, lighting: LightingUi, actions: RestActions) {
     val ending = state.ending ?: return
     Text(
         when (ending.reason.kind) {
@@ -225,6 +343,20 @@ private fun Ended(state: RestState, audio: AudioUi, actions: RestActions) {
             Announce.NONE -> null
         }?.let { Text(it, color = TextSub, fontSize = 24.sp) }
     }
+    if (lighting.items.isNotEmpty() || lighting.restLine != null) {
+        Column(Modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("무드등", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+            if (lighting.items.isEmpty()) lighting.restLine?.let { Text(it, color = TextSub, fontSize = 20.sp) }
+            LightLines(lighting.items)
+            if (lighting.working) Text("무드등을 처리하는 중이에요. 휴식 소리와는 따로 진행돼요.", color = TextSub, fontSize = 20.sp)
+        }
+    }
+    if (!lighting.working) LightingRecordsOrEntry(lighting, actions)
+    if (lighting.earlier.isNotEmpty()) {
+        Text("이전 무드등 기록", color = TextSub, fontSize = 22.sp)
+        LightLines(lighting.earlier)
+    }
+    lighting.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
     PrimaryButton("다시 쉬기", enabled = true, onClick = actions.restAgain)
 }
 

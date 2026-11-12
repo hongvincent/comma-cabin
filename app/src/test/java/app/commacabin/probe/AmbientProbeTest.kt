@@ -528,4 +528,17 @@ class AmbientProbeTest {
         assertEquals(2, lowerTarget(3, 0..4))
         assertNull(lowerTarget(0, 0..100))
     }
+
+    @Test
+    fun `product lighting work or records block every brightness write of the probe`() {
+        var product: String? = "정리하지 않은 휴식 무드등 기록이 있어요"
+        val p = AmbientProbe(light, store, scheduler, { parking }, { scheduler.now }, lease, externalBlock = { product }).also { it.start() }
+        p.startChange()
+        assertTrue(light.sets.isEmpty())
+        assertNull(store.stored)
+
+        product = null
+        p.startChange()
+        assertEquals(listOf(60), light.sets)
+    }
 }

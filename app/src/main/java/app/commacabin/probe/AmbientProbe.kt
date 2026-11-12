@@ -112,6 +112,8 @@ class AmbientProbe(
     private val lease: RecordLease = RecordLease(),
     private val log: (String) -> Unit = {},
     private val newJobId: () -> String = { UUID.randomUUID().toString() },
+    /** Product lighting busy or holding records: no brightness write from here. */
+    private val externalBlock: () -> String? = { null },
 ) {
     var state = ProbeUiState(parking = parking())
         private set
@@ -189,6 +191,7 @@ class AmbientProbe(
     fun startChange() {
         if (!alive) return
         writeBlock()?.let { return reject(it) }
+        externalBlock()?.let { return reject("제품 휴식 무드등 작업 때문에 쓰지 않아요: $it") }
         if (state.record != null) return reject("남은 복원 기록이 있어 새로 바꾸지 않아요")
         if (!parking().parked) return reject("주차(P 기어 + 주행 제한 없음)가 확인되지 않아 시작하지 않아요")
         note("0 주차 확인", "P 기어, 주행 제한 없음")
@@ -200,6 +203,7 @@ class AmbientProbe(
     fun restore() {
         if (!alive) return
         writeBlock()?.let { return reject(it) }
+        externalBlock()?.let { return reject("제품 휴식 무드등 작업 때문에 쓰지 않아요: $it") }
         val record = state.record ?: return reject("되돌릴 기록이 없어요")
         state.lockReason?.let { return reject(it) }
         invalidateReads()
@@ -322,6 +326,10 @@ class AmbientProbe(
             update { copy(busy = false) }
             return reject("쓰기 직전 주차 조건이 사라져 보류해요. 기록을 만들지 않았고 차량에 쓰지 않았어요")
         }
+        externalBlock()?.let {
+            update { copy(busy = false) }
+            return reject("쓰기 직전 제품 휴식 무드등 작업이 있어 기록을 만들지 않았고 차량에 쓰지 않았어요: $it")
+        }
         val record = RecoveryRecord(
             jobId = newJobId(),
             area = area.key,
@@ -356,6 +364,7 @@ class AmbientProbe(
             }
         }
         if (reason != null) return reject(reason)
+        externalBlock()?.let { return reject("제품 휴식 무드등 작업이 있어 원복하지 않아요: $it") }
         if (!parking().parked) {
             persist(record.copy(stage = Stage.RESTORE_HELD))
             refreshGuide()

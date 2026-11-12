@@ -58,6 +58,8 @@ class ControlBench(
     private val lease: RecordLease,
     private val log: (String) -> Unit = {},
     private val newId: () -> String = { UUID.randomUUID().toString() },
+    /** Product lighting busy or holding records: no vehicle write from here (seat STOP excepted). */
+    private val externalBlock: () -> String? = { null },
 ) {
     var state = ControlUiState()
         private set
@@ -203,7 +205,7 @@ class ControlBench(
     fun apply(prop: ControlProp) {
         require(prop != ControlProp.SEAT_BACKREST)
         if (!alive) return
-        writeBlock()?.let { return reject(it) }
+        vehicleBlock()?.let { return reject(it) }
         recordOf(prop)?.let { return reject("${prop.label} 기록이 남아 있어 새로 바꾸지 않아요(${it.stage.label})") }
         hvacConflict(prop)?.let { return reject(it) }
         if (prop == ControlProp.AMBIENT_COLOR && brightnessRecordPresent()) return reject("밝기 검증 기록이 남아 있어 무드등 색을 바꾸지 않아요")
@@ -237,7 +239,7 @@ class ControlBench(
     fun restore(prop: ControlProp) {
         require(prop != ControlProp.SEAT_BACKREST)
         if (!alive) return
-        writeBlock()?.let { return reject(it) }
+        vehicleBlock()?.let { return reject(it) }
         val r = recordOf(prop) ?: return reject("${prop.label}: 되돌릴 기록이 없어요")
         lockReason(r)?.let { return reject(it) }
         if (state.pending.containsKey(prop)) return reject("${prop.label}: 응답을 기다리는 요청이 있어요")
@@ -282,7 +284,7 @@ class ControlBench(
     fun exploreSeat(direction: Move) {
         require(direction != Move.STOP)
         if (!alive) return
-        writeBlock()?.let { return reject(it) }
+        vehicleBlock()?.let { return reject(it) }
         if (seat != null) return reject("등받이가 이미 움직이는 중이에요")
         recordOf(ControlProp.SEAT_BACKREST)?.let { return reject("등받이 기록이 남아 있어 새로 움직이지 않아요(${it.stage.label})") }
         seatSafe()?.let { return reject(it) }
@@ -307,7 +309,7 @@ class ControlBench(
     /** Moves back toward the recorded position in the direction the probe showed, STOP on reaching it. */
     fun restoreSeat() {
         if (!alive) return
-        writeBlock()?.let { return reject(it) }
+        vehicleBlock()?.let { return reject(it) }
         if (seat != null) return reject("등받이가 움직이는 중이에요")
         val r = recordOf(ControlProp.SEAT_BACKREST) ?: return reject("등받이: 되돌릴 기록이 없어요")
         lockReason(r)?.let { return reject(it) }
@@ -391,6 +393,7 @@ class ControlBench(
                 area !in cap.second -> "HVAC_AUTO 영역 $area 미지원(${cap.second})"
                 !parking().parked || hidden -> "주차 조건 없음 또는 화면 이탈"
                 state.storageFault != null -> "기록 저장 오류"
+                externalBlock() != null -> "제품 휴식 무드등 작업 중"
                 else -> null
             }
             if (held != null) {
@@ -610,7 +613,7 @@ class ControlBench(
     }
 
     /** The preparation [token] is still the current one and the vehicle is still parked. */
-    private fun stillValid(token: Int) = alive && !hidden && token == opSeq && parking().parked && state.storageFault == null
+    private fun stillValid(token: Int) = alive && !hidden && token == opSeq && parking().parked && state.storageFault == null && externalBlock() == null
 
     /** A record saved for a command that was certainly not sent: remove it (product-spec 6-1 "요청 안 함"). */
     private fun unsent(record: ControlRecord, token: Int, why: String) {
@@ -820,6 +823,9 @@ class ControlBench(
         note("거절: $message")
         update { copy(message = message) }
     }
+
+    /** [writeBlock] plus the product lighting: checked before every vehicle write (not for deleting a record). */
+    private fun vehicleBlock(): String? = writeBlock() ?: externalBlock()?.let { "제품 휴식 무드등 작업 때문에 차량에 쓰지 않아요: $it" }
 
     private fun writeBlock(): String? = when {
         hidden -> "화면이 보이지 않는 동안에는 새로 쓰지 않아요"

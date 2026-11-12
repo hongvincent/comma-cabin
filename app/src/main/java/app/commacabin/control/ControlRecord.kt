@@ -208,9 +208,23 @@ object ControlCodec {
  * Temp file, fsync, atomic rename, then fsync of the parent directory: only then is the rename itself
  * durable, so only then is the save a success (and a command may follow).
  */
+/** Default for [writeDurably]: fsync of the directory itself, so the rename survives a crash. */
+val SYNC_DIRECTORY: (File) -> Unit = { dir -> FileChannel.open(dir.toPath(), StandardOpenOption.READ).use { it.force(true) } }
+
+/** Temp file → fsync → ATOMIC_MOVE over [file] → fsync of the parent directory. Any failure throws. */
+fun writeDurably(file: File, text: String, syncDirectory: (File) -> Unit) {
+    val temp = File(file.parentFile, file.name + ".tmp")
+    FileOutputStream(temp).use { out ->
+        out.write(text.toByteArray(Charsets.UTF_8))
+        out.fd.sync()
+    }
+    Files.move(temp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+    syncDirectory(requireNotNull(file.absoluteFile.parentFile) { "no parent directory" })
+}
+
 class FileControlStore(
     private val file: File,
-    private val syncDirectory: (File) -> Unit = { dir -> FileChannel.open(dir.toPath(), StandardOpenOption.READ).use { it.force(true) } },
+    private val syncDirectory: (File) -> Unit = SYNC_DIRECTORY,
 ) : ControlStore {
     override var lastError: String? = null
         private set
@@ -226,13 +240,7 @@ class FileControlStore(
     }
 
     override fun save(records: List<ControlRecord>): Boolean = try {
-        val temp = File(file.parentFile, file.name + ".tmp")
-        FileOutputStream(temp).use { out ->
-            out.write(ControlCodec.encode(records).toByteArray(Charsets.UTF_8))
-            out.fd.sync()
-        }
-        Files.move(temp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
-        syncDirectory(file.absoluteFile.parentFile)
+        writeDurably(file, ControlCodec.encode(records), syncDirectory)
         lastError = null
         true
     } catch (e: Exception) {

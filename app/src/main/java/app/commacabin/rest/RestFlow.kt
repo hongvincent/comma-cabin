@@ -85,6 +85,7 @@ data class RestState(
     val door: DoorState = DoorState(),
     val sound: SoundMode = SoundMode.QUIET,
     val level: SoundLevel = SoundLevel.MEDIUM,
+    val lighting: Boolean = true,
     val session: Session? = null,
     val remainingMs: Long = 0,
     val dimmed: Boolean = false,
@@ -121,6 +122,12 @@ class RestFlow(
         private set
     var onState: (RestState) -> Unit = {}
 
+    /** Once per session, right after it really started, with the [무드등 조정] choice of that start. */
+    var onSessionStarted: (sessionId: Int, lighting: Boolean) -> Unit = { _, _ -> }
+
+    /** Once per session, after its sound was told to stop, so vehicle work never delays the sound stop. */
+    var onSessionEnded: (sessionId: Int, reason: EndReason) -> Unit = { _, _ -> }
+
     private var sessionSeq = 0
     private var lastTouchElapsed = 0L
     private var restTimer: Cancellable? = null
@@ -138,6 +145,7 @@ class RestFlow(
             door = door(),
             sound = settings.sound,
             level = settings.level,
+            lighting = settings.lighting,
         )
     }
 
@@ -192,6 +200,7 @@ class RestFlow(
             copy(screen = Screen.RESTING, parking = p, door = d, nowMs = now, session = session, remainingMs = restMs, dimmed = false, ending = null, notice = null)
         }
         scheduleRestTick(id)
+        onSessionStarted(id, state.lighting)
     }
 
     /** Any touch while resting. When dimmed it only wakes the screen. */
@@ -211,9 +220,17 @@ class RestFlow(
         end(s.id, EndReason.USER)
     }
 
-    /** Ready: just remembered. Resting: turning the sound on needs focus; if refused the rest stays quiet. */
+    /**
+     * Ready: just remembered. Resting: turning the sound on needs focus; if refused the rest stays quiet.
+     * Pressing the choice already shown still stores it (after a sound failure the screen shows quiet while
+     * the stored choice may still be on).
+     */
     fun setSound(sound: SoundMode) {
-        if (sound == state.sound || state.screen == Screen.ONBOARDING) return
+        if (state.screen == Screen.ONBOARDING) return
+        if (sound == state.sound) {
+            if (settings.sound != sound) store(settings.copy(sound = sound))
+            return
+        }
         val s = state.session
         if (state.screen == Screen.RESTING && s != null) {
             audio.setSound(s.id, sound)?.let { reason ->
@@ -224,6 +241,13 @@ class RestFlow(
         }
         update { copy(sound = sound, notice = null) }
         store(settings.copy(sound = sound))
+    }
+
+    /** [무드등 조정] on/off: only remembered, read at the next start. Nothing is read or written here. */
+    fun setLighting(on: Boolean) {
+        if (on == state.lighting || state.screen == Screen.ONBOARDING || state.screen == Screen.RESTING) return
+        update { copy(lighting = on) }
+        store(settings.copy(lighting = on))
     }
 
     fun setLevel(level: SoundLevel) {
@@ -323,6 +347,7 @@ class RestFlow(
         log("session $id end: $reason")
         update { copy(screen = Screen.ENDED, ending = Ending(id, reason, now), remainingMs = 0, dimmed = false, nowMs = now, notice = null) }
         audio.end(id, normal = reason == EndReason.TIME_UP)
+        onSessionEnded(id, reason)
     }
 
     private fun store(next: RestSettings) {

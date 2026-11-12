@@ -1,9 +1,8 @@
 package app.commacabin.probe
 
+import app.commacabin.control.SYNC_DIRECTORY
+import app.commacabin.control.writeDurably
 import java.io.File
-import java.io.FileOutputStream
-import java.nio.file.Files
-import java.nio.file.StandardCopyOption
 import org.json.JSONException
 import org.json.JSONObject
 
@@ -126,8 +125,14 @@ object RecoveryCodec {
     private fun JSONObject.nullableInt(name: String): Int? = if (isNull(name)) null else strictInt(name)
 }
 
-/** Writes a temp file, syncs it, then renames it over the record so readers never see half a file. */
-class FileRecoveryStore(private val file: File) : RecoveryStore {
+/**
+ * Writes a temp file, syncs it, renames it over the record and syncs the directory ([writeDurably]), so
+ * readers never see half a file and a save that returns true survives a crash. Same file name and v1 format.
+ */
+class FileRecoveryStore(
+    private val file: File,
+    private val syncDirectory: (File) -> Unit = SYNC_DIRECTORY,
+) : RecoveryStore {
     override fun load(): LoadResult {
         if (!file.exists()) return LoadResult.Empty
         val text = try {
@@ -139,12 +144,7 @@ class FileRecoveryStore(private val file: File) : RecoveryStore {
     }
 
     override fun save(record: RecoveryRecord): Boolean = try {
-        val temp = File(file.parentFile, file.name + ".tmp")
-        FileOutputStream(temp).use { out ->
-            out.write(RecoveryCodec.encode(record).toByteArray(Charsets.UTF_8))
-            out.fd.sync()
-        }
-        Files.move(temp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING)
+        writeDurably(file, RecoveryCodec.encode(record), syncDirectory)
         true
     } catch (e: Exception) {
         false

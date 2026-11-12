@@ -479,4 +479,49 @@ class RestFlowTest {
         flow.start()
         assertEquals(1, state.session!!.id)
     }
+
+    // --- STEP 8: lighting hooks and settings ---
+
+    @Test
+    fun `each session reaches the lighting once at start and once at its end, after its sound was told to stop`() {
+        val events = mutableListOf<String>()
+        flow.onSessionStarted = { id, on -> events += "start $id $on" }
+        flow.onSessionEnded = { id, reason -> events += "end $id $reason after ${audio.calls.last()}" }
+        flow.start()
+        runFor(5_000)
+        flow.endByUser()
+        flow.endByUser()
+        flow.onHidden()
+
+        assertEquals(listOf("start 1 true", "end 1 USER after end 1 normal=false"), events)
+    }
+
+    @Test
+    fun `the lighting choice is only remembered on the ready screen and passed at the next start`() {
+        var passed: Boolean? = null
+        flow.onSessionStarted = { _, on -> passed = on }
+        flow.setLighting(false)
+        assertFalse(state.lighting)
+        assertEquals(false, saved.last().lighting)
+        assertTrue(audio.calls.isEmpty())
+
+        flow.start()
+        flow.setLighting(true) // not while resting
+        assertEquals(false, passed)
+        assertFalse(state.lighting)
+    }
+
+    @Test
+    fun `pressing the quiet choice already shown after a sound failure stores quiet`() {
+        settings = RestSettings(onboardingVersion = ONBOARDING_VERSION, sound = SoundMode.ON)
+        flow.start()
+        flow.onSoundFailed(1, "failed")
+        assertTrue(saved.isEmpty())
+
+        flow.setSound(SoundMode.QUIET)
+        assertEquals(SoundMode.QUIET, saved.single().sound)
+        assertEquals(SoundMode.QUIET, state.sound)
+        flow.setSound(SoundMode.QUIET)
+        assertEquals(1, saved.size)
+    }
 }

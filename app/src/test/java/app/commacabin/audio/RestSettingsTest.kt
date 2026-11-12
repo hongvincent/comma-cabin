@@ -39,4 +39,16 @@ class RestSettingsTest {
 
         assertEquals(RestSettings(ONBOARDING_VERSION, SoundMode.ON, SoundLevel.LOW), s)
     }
+
+    @Test
+    fun `settings saved before STEP 8 keep sound and level, get lighting on and see the new onboarding once`() {
+        val old = RestSettings.from(mapOf(RestSettings.KEY_ONBOARDING to 2, RestSettings.KEY_SOUND to "ON", RestSettings.KEY_LEVEL to "HIGH"))
+        assertEquals(SoundMode.ON, old.sound)
+        assertEquals(SoundLevel.HIGH, old.level)
+        assertTrue(old.lighting)
+        assertFalse(old.onboardingSeen)
+
+        assertFalse(RestSettings.from(mapOf(RestSettings.KEY_LIGHTING to false)).lighting)
+        assertTrue(RestSettings.from(mapOf(RestSettings.KEY_LIGHTING to "false")).lighting)
+    }
 }

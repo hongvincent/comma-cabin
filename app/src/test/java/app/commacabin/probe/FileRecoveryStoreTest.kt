@@ -102,4 +102,19 @@ class FileRecoveryStoreTest {
         assertTrue(store.delete())
         assertFalse(file.exists())
     }
+
+    @Test
+    fun `a failed directory sync is a failed save, and the probe then sends no command`() {
+        val file = File(temp.root, FileRecoveryStore.FILE_NAME)
+        val store = FileRecoveryStore(file) { throw java.io.IOException("fsync dir") }
+        assertFalse(store.save(record))
+
+        // A fresh folder: the failed save above still renamed its file (only the directory sync failed).
+        val probeStore = FileRecoveryStore(File(temp.newFolder("probe"), FileRecoveryStore.FILE_NAME)) { throw java.io.IOException("fsync dir") }
+        val light = FakeLight()
+        val probe = AmbientProbe(light, probeStore, FakeScheduler(), { ParkingState(GearState.PARK, false) }, { 0L }).also { it.start() }
+        probe.startChange()
+        assertTrue(light.sets.isEmpty())
+        assertTrue(probe.state.storageFault != null)
+    }
 }
