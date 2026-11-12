@@ -6,7 +6,7 @@
 - 결론:
   - 휴식음 재생·크기·켬/조용히 전환·60초 감쇄·종료 시각 정지·종료 뒤 무음을 **실행 확인**했다. 안내음 → 한국어 음성(`onStart`/`onDone`) → 포커스 반납도 **실행 확인**했다. 문 열림·D 전환·앱 이탈 즉시 정지와 설정 기억도 확인했다.
   - 확인 근거는 SDK 이벤트, AudioFlinger 트랙(게인·VolumeShaper 감쇄), CarAudioFocus 기록이다.
-  - **스피커로 실제 들리는지는 미확인**이다. 에뮬레이터 오디오 출력을 켜면 호스트 CoreAudio 초기화에서 멈춰, 출력이 꺼진(`-no-audio`) 상태로만 시험했다(1장).
+  - **스피커로 실제 들리는지는 미확인**이다. 에뮬레이터 오디오 출력을 켜면 호스트 CoreAudio 초기화에서 멈춰, 출력이 꺼진(`-no-audio`) 상태로만 시험했다(1장). STEP 12의 WAV 출력 시도도 WAV 파일·신호를 얻지 못하고 중단했다(8장).
 
 ## 1. 환경과 장애·복구
 
@@ -14,7 +14,7 @@
 | --- | --- |
 | 이전 종료 원인 | STEP 5까지 쓰던 에뮬레이터는 이전 세션이 백그라운드 명령으로 18:29:41에 띄웠다. 20:29:41에 "background time limit"으로 중지됐다(도구 알림 `status killed`, 에뮬레이터 로그에 정상 종료 절차). 사용자 종료가 아니다(`app/build/reports/rest-audio/logs/emulator-exit-cause.txt`) |
 | 복구 방식 | 같은 AVD `Pleos_Connect_2_1_0_probe`(RAM 4096MB, GPU host, AVD 설정 변경 없음). `-no-snapshot` 콜드 부트, `-wipe-data` 없음. Python `Popen(start_new_session=True, stdin=DEVNULL)`로 세션과 분리해 실행했다 |
-| 오디오 출력 시도 | PM 지시로 `-no-audio`를 빼고 `QEMU_AUDIO_IN_DRV=none`(호스트 마이크 미사용, `-allow-host-audio` 없음)으로 다시 켰다. 첫 실행(pid 77739)은 부팅 직후 QEMU의 CoreAudio 출력 초기화(`ca_init_voice_locked` → `AudioDeviceCreateIOProcID`)가 macOS 오디오 서버 응답을 기다리며 멈췄다. 15초 뒤 에뮬레이터 hang detector가 프로세스를 종료했다(`env/crash-summary.txt`). 같은 설정의 재시도(82439)와 그 뒤 `-no-audio` 실행(87559)은 이전 크래시의 보고 동의 대화상자에 걸린 정황이 있다. 같은 새 크래시로 단정하지 않는다. 두 프로세스는 PM 승인 범위에서 해당 PID만 SIGTERM 뒤 SIGKILL로 정리했다 |
+| 오디오 출력 시도 | PM 지시로 `-no-audio`를 빼고 `QEMU_AUDIO_IN_DRV=none`(호스트 입력을 쓰지 않으려는 설정 의도, `-allow-host-audio` 없음)으로 다시 켰다. 이 환경 변수가 실제로 적용돼 입력이 꺼졌는지는 확인하지 못했다. STEP 12에서 같은 방식으로 실행했을 때도 CoreAudio 입력 초기화 오류 로그가 남았다(8장). 첫 실행(pid 77739)은 부팅 직후 QEMU의 CoreAudio 출력 초기화(`ca_init_voice_locked` → `AudioDeviceCreateIOProcID`)가 macOS 오디오 서버 응답을 기다리며 멈췄다. 15초 뒤 에뮬레이터 hang detector가 프로세스를 종료했다(`env/crash-summary.txt`). 같은 설정의 재시도(82439)와 그 뒤 `-no-audio` 실행(87559)은 이전 크래시의 보고 동의 대화상자에 걸린 정황이 있다. 같은 새 크래시로 단정하지 않는다. 두 프로세스는 PM 승인 범위에서 해당 PID만 SIGTERM 뒤 SIGKILL로 정리했다 |
 | 최종 실행 | `emulator -avd Pleos_Connect_2_1_0_probe -no-snapshot -gpu host -no-audio -crash-report-mode disabled -no-metrics`(분리 실행, 13.8초 부팅). 이전 크래시 덤프·AVD 데이터·잠금 파일·호스트 오디오 설정은 지우거나 바꾸지 않았다 |
 | 기기 | `emulator-5554`, `ro.kernel.qemu=1`(조작 명령마다 확인), 사용자 10. 앱은 `install -r`로 설치(데이터 유지) |
 | Virtual Console | `adb forward tcp:8088 tcp:8088` 복구 뒤 기존 공개 콘솔 페이지를 브라우저로 한 번 열어 브리지를 활성화했다(`web-activation`) |
@@ -160,7 +160,7 @@
 
 ## 5. 확인하지 못한 것
 
-- 스피커·이어폰으로 실제 들리는지(물리 청음): 출력이 꺼진 에뮬레이터라 확인하지 못했다(1장). 트랙 재생·감쇄·SDK 이벤트까지만 확인했다.
+- 스피커·이어폰으로 실제 들리는지(물리 청음): 출력이 꺼진 에뮬레이터라 확인하지 못했다(1장). 트랙 재생·감쇄·SDK 이벤트까지만 확인했다. STEP 12의 WAV 출력 시도에서도 출력 신호를 얻지 못했다(8장).
 - 다른 앱과의 실제 포커스 경합(LOSS_TRANSIENT·CAN_DUCK·LOSS): 에뮬레이터에서 재현하지 못했다. 단위 테스트로만 확인했다. 이 환경은 앱에 duck 이벤트를 보내지 않았다.
 - VolumeShaper 시간 기준이 일시정지 중에 흐르는지는 문서에 없다. 재개마다 그 시각 기준 envelope를 새로 설정하므로 결과는 같다. 공식 문서대로 출력 장치가 바뀌면 곡선 위치를 잃고 끝(0)으로 갈 수 있다(조용해지는 쪽).
 - 주행 제한 단독 변경, 시동 꺼짐: 이전과 같이 미확인이다.
@@ -199,3 +199,34 @@
 | `docs/` | TTS·Pleos 오디오 포커스 공식 문서 사본, TTS 3.3.1 공개 API |
 | `playwright/` | 콘솔 활성화 때 Playwright가 만든 파일 |
 | `screens/` | 화면 |
+
+## 8. STEP 12 오디오 출력 경로 재시도 (중단)
+
+- 날짜: 2026-11-13
+- 목적: `-no-audio` 대신 WAV 출력(시험 A)과 CoreAudio 출력만(시험 B)으로 실제 출력 신호를 확인하려 했다. 앱 코드와 SDK는 바꾸지 않았다.
+
+**시험 A(WAV, 1회)**:
+- 실행: 같은 AVD를 `adb emu kill`로 정상 종료한 뒤 원래 명령에서 `-no-audio`만 뺐다(`-no-snapshot -gpu host -crash-report-mode disabled -no-metrics`). 일회성 프로세스 환경으로 `QEMU_AUDIO_OUT_DRV=wav`, `QEMU_AUDIO_IN_DRV=none`, `QEMU_WAV_PATH=<새 WAV 경로>`를 줬다. `-allow-host-audio`는 쓰지 않았고, 전역 환경·AVD 설정에는 저장하지 않았다.
+- 결과:
+  - 부팅은 됐다(14.2초).
+  - **WAV 파일은 끝까지 생기지 않았다.**
+  - 에뮬레이터 stderr에 `coreaudio(input, ???): Could not resume the device`, `coreaudio(input, unknown property): Could not get device period size`가 모두 9줄 남았다. 이 설치본에서 `QEMU_AUDIO_OUT_DRV=wav`·`QEMU_AUDIO_IN_DRV=none`이 적용됐다는 증거는 없고, 입력 쪽 CoreAudio 초기화 흔적이 있다.
+  - 부팅 직후 게스트 load average는 약 298이었다.
+- 중단: 입력을 끈다는 전제를 입증하지 못했다. 그래서 Codex 지시로 음성·휴식 시험을 진행하지 않고 정상 종료했다. 이 실행 동안 수집한 앱 로그는 0줄이었다. 일부 게스트 조회는 시간 초과돼 상태 확인에 한계가 있었다.
+
+**시험 B(CoreAudio 출력만)**: 같은 환경 변수 방식이라 안전 전제가 충족되지 않아 **실행하지 않았다**.
+
+**복귀**:
+- 원래 명령(`-no-audio`)으로 같은 AVD를 다시 시작했다(12.1초 부팅). 부팅 완료 직후 stderr는 0줄이었다. 이후 그래픽 경고(`[h264 …] no frame!` 4줄, `gldCopyBufferSubData: NEEDS IMPLEMENTATION` 1줄)가 남았고, CoreAudio 메시지는 없다. `adb forward tcp:8088 tcp:8088`을 다시 연결했다.
+- SDK로 다시 읽어 보니 공조 전원만 true였다(Console은 false). 정상 공조 패널로 끄고 SDK로 false를 확인했다.
+- 나머지는 SDK 재조회로 확인했다: P, 문 닫힘, 무드등 OFF·70·`0x00FFFFFF`, Auto·Dual false, 풍량 3, 22.0/22.0, 등받이 0.
+- 기록 파일 3개는 비어 있고, 밝기 v1 파일은 없으며, 포커스 보유자도 없다. 설정(버전 5, QUIET, LOW, 22.0)과 userdata는 보존됐다. AVD `config.ini` 해시는 시험 전과 같다.
+
+**호스트·마이크**:
+- 호스트 출력 장치·볼륨·마이크 권한·전역 설정은 바꾸지 않았다. 앱에는 마이크 권한(RECORD_AUDIO)이 없다.
+- 입력 초기화 오류 로그 외에, 호스트 입력이 실제로 녹음되거나 전달됐는지 판단할 증거는 없다. 그래서 단정하지 않는다.
+
+**결론**:
+- 출력 신호(WAV)와 스피커 청취는 계속 **미확인**이다. 사람의 청취 확인도 하지 않았다.
+- 출력 경로를 다시 시험하려면, 입력을 확실히 끄는 방법(이 설치본에서 지원되는 공식 옵션)을 먼저 확인하는 결정이 필요하다.
+- 원본: `app/build/reports/audio-output/`(`logs/a-emulator.err`, `logs/a*-*.txt`, `logs/r*-*.txt`, `logs/f1-final-baseline.txt`)
