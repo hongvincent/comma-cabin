@@ -2,7 +2,7 @@
 
 현대자동차그룹 차량용 앱 개발 공모전을 위한 Android 프로젝트입니다.
 
-`jeonyul` 브랜치에서 새로 개발합니다. 현재는 빈 화면을 실행하는 앱과 Gradle 빌드 설정만 있습니다.
+`jeonyul` 브랜치에서 새로 개발합니다. 현재는 Pleos 에뮬레이터에서 앰비언트 밝기 적용·복원을 검증하는 개발용 앱입니다. 검증 결과는 docs/verification/ambient-brightness.md에 기록합니다.
 
 ## 개발 환경
 
