@@ -27,6 +27,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -37,18 +38,45 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-// Product screen look: the existing dark navy and mint, used sparingly. System font, native Material3 parts.
-internal val Background = Color(0xFF0B0F14)
-internal val Card = Color(0xFF161D26)
-internal val Line = Color(0xFF2A3440)
-internal val TextMain = Color(0xFFF2F4F7)
-internal val TextSub = Color(0xFFAAB4C0)
-internal val Accent = Color(0xFF7FCFC4)
-/** Selected choice: a quiet mint tint, so a chosen option never looks like the screen's main button. */
-internal val AccentSoft = Color(0xFF1D3634)
-internal val OnAccent = Color(0xFF0B1A18)
-internal val Warn = Color(0xFFF2B48C)
+// Product screen look: light, to continue the vehicle's white screens around the app. A calm deep teal for the one
+// main action and the selected choices, thin lines instead of heavy cards. System font, native Material3 parts.
+internal val Background = Color(0xFFF7F8FA)
+internal val Card = Color(0xFFFFFFFF)
+internal val Line = Color(0xFFDDE3E8)
+/** Outlines of controls: a little darker than the dividers so buttons stay visible on white. */
+internal val Outline = Color(0xFFBFC8CF)
+internal val TextMain = Color(0xFF182026)
+internal val TextSub = Color(0xFF57636C)
+internal val Accent = Color(0xFF22665D)
+/** Selected choice: a very light teal, so a chosen option never looks like the screen's main button. */
+internal val AccentSoft = Color(0xFFE9F3F1)
+internal val OnAccent = Color(0xFFFFFFFF)
+internal val Warn = Color(0xFF9F4C21)
+/** Disabled main button. */
+internal val Disabled = Color(0xFFE6EAED)
+/** The dim rest screen keeps its black background and low timer (unchanged). */
 internal val Dimmed = Color(0xFF39414B)
+
+/** Material3 colors for the product screens only (dialogs, text buttons, switches); the debug tools keep theirs. */
+internal val CabinColors = lightColorScheme(
+    primary = Accent,
+    onPrimary = OnAccent,
+    primaryContainer = AccentSoft,
+    onPrimaryContainer = Accent,
+    secondary = Accent,
+    onSecondary = OnAccent,
+    background = Background,
+    onBackground = TextMain,
+    surface = Card,
+    onSurface = TextMain,
+    surfaceVariant = Background,
+    onSurfaceVariant = TextSub,
+    surfaceContainerHigh = Card,
+    outline = Outline,
+    outlineVariant = Line,
+    error = Warn,
+    onError = OnAccent,
+)
 internal val ButtonHeight = 96.dp
 internal val ControlHeight = 72.dp
 
@@ -56,7 +84,7 @@ internal val ControlHeight = 72.dp
 @Composable
 internal fun Panel(modifier: Modifier = Modifier, spacing: Dp = 16.dp, padding: Dp = 28.dp, content: @Composable ColumnScope.() -> Unit) {
     Column(
-        modifier.fillMaxWidth().background(Card, RoundedCornerShape(20.dp)).padding(padding),
+        modifier.fillMaxWidth().background(Card, RoundedCornerShape(16.dp)).border(1.dp, Line, RoundedCornerShape(16.dp)).padding(padding),
         verticalArrangement = Arrangement.spacedBy(spacing),
         content = content,
     )
@@ -115,8 +143,8 @@ internal fun SwitchRow(label: String, note: String?, checked: Boolean, onChange:
                 checkedTrackColor = Accent,
                 checkedBorderColor = Accent,
                 uncheckedThumbColor = TextSub,
-                uncheckedTrackColor = Background,
-                uncheckedBorderColor = Line,
+                uncheckedTrackColor = Disabled,
+                uncheckedBorderColor = Outline,
             ),
         )
     }
@@ -131,16 +159,16 @@ internal fun SwitchRow(label: String, note: String?, checked: Boolean, onChange:
 internal fun Choice(options: List<Pair<String, Boolean>>, enabled: Boolean = true, optionWidth: Dp = 124.dp, onSelect: (Int) -> Unit) {
     val colors = SegmentedButtonDefaults.colors(
         activeContainerColor = AccentSoft,
-        activeContentColor = TextMain,
+        activeContentColor = Accent,
         activeBorderColor = Accent,
-        inactiveContainerColor = Color.Transparent,
+        inactiveContainerColor = Card,
         inactiveContentColor = TextSub,
-        inactiveBorderColor = Line,
-        disabledActiveContainerColor = Card,
-        disabledActiveContentColor = TextSub.copy(alpha = 0.6f),
-        disabledActiveBorderColor = Line,
-        disabledInactiveContainerColor = Color.Transparent,
-        disabledInactiveContentColor = TextSub.copy(alpha = 0.45f),
+        inactiveBorderColor = Outline,
+        disabledActiveContainerColor = Disabled,
+        disabledActiveContentColor = TextSub,
+        disabledActiveBorderColor = Outline,
+        disabledInactiveContainerColor = Card,
+        disabledInactiveContentColor = TextSub,
         disabledInactiveBorderColor = Line,
     )
     SingleChoiceSegmentedButtonRow {
@@ -177,7 +205,7 @@ internal fun PrimaryButton(label: String, enabled: Boolean, onClick: () -> Unit)
         onClick = onClick,
         enabled = enabled,
         modifier = Modifier.fillMaxWidth().heightIn(min = ButtonHeight),
-        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent, disabledContainerColor = Card, disabledContentColor = TextSub),
+        colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent, disabledContainerColor = Disabled, disabledContentColor = TextSub),
     ) {
         Text(label, fontSize = 30.sp, fontWeight = FontWeight.SemiBold)
     }
@@ -185,7 +213,7 @@ internal fun PrimaryButton(label: String, enabled: Boolean, onClick: () -> Unit)
 
 @Composable
 internal fun SecondaryButton(label: String, modifier: Modifier = Modifier, minWidth: Dp = 180.dp, minHeight: Dp = ButtonHeight, fontSize: Int = 28, onClick: () -> Unit) {
-    OutlinedButton(onClick = onClick, modifier = modifier.widthIn(min = minWidth).heightIn(min = minHeight), colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMain), border = BorderStroke(1.dp, Line)) {
+    OutlinedButton(onClick = onClick, modifier = modifier.widthIn(min = minWidth).heightIn(min = minHeight), colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMain), border = BorderStroke(1.dp, Outline)) {
         Text(label, fontSize = fontSize.sp)
     }
 }
@@ -194,11 +222,11 @@ internal fun SecondaryButton(label: String, modifier: Modifier = Modifier, minWi
 internal fun SmallButton(label: String, enabled: Boolean, primary: Boolean = false, minWidth: Dp = 160.dp, fontSize: Int = 22, onClick: () -> Unit) {
     val modifier = Modifier.heightIn(min = 80.dp).widthIn(min = minWidth)
     if (primary) {
-        Button(onClick = onClick, enabled = enabled, modifier = modifier, colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent, disabledContainerColor = Card, disabledContentColor = TextSub)) {
+        Button(onClick = onClick, enabled = enabled, modifier = modifier, colors = ButtonDefaults.buttonColors(containerColor = Accent, contentColor = OnAccent, disabledContainerColor = Disabled, disabledContentColor = TextSub)) {
             Text(label, fontSize = fontSize.sp, fontWeight = FontWeight.SemiBold)
         }
     } else {
-        OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier, colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMain), border = BorderStroke(1.dp, Line)) {
+        OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier, colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMain), border = BorderStroke(1.dp, Outline)) {
             Text(label, fontSize = fontSize.sp)
         }
     }

@@ -141,3 +141,25 @@
   - 좁은 화면(1열)은 실기로 보지 못했다(이 기기의 앱 영역이 넓고, 합법적인 창 폭 조절을 따로 하지 않음).
   - 첫 실행 안내 화면, 남은 기록 카드가 있는 준비·종료 화면, 정상 시간 종료, 차량 설정을 실제로 바꾸는 휴식, release 실행은 이번에 다시 보지 않았다.
   - 글자 확대·음성 읽기 등 접근성 전체 검사는 하지 않았다.
+
+## 10. STEP 16D 밝은 화면 (2026-11-13)
+
+9절의 배치는 그대로 두고 색만 차량의 흰 화면에 맞춰 밝게 바꿨다(사용자 요청). 상태·콜백·판정·기록·차량 쓰기 계약은 바꾸지 않았다.
+
+- 파일: `CabinUi.kt`(색 토큰, 제품 화면 전용 Material3 `lightColorScheme`, 패널의 얇은 테두리, 스위치·선택·버튼 색), `RestScreen.kt`(제품 화면을 이 테마로 감쌈, 구분선 색, 원래 색 견본의 테두리).
+  - 개발 진단 화면은 기존 어두운 테마를 그대로 쓴다.
+- 색:
+  - 배경 `#F7F8FA`, 패널 `#FFFFFF`(선 `#DDE3E8`), 본문 `#182026`, 보조글 `#57636C`
+  - 강조(시작 버튼·선택·스위치) `#22665D`, 선택 배경 `#E9F3F1`, 경고 `#9F4C21`
+  - 대화상자도 같은 밝은 Material3 색을 쓴다(`surface`·`surfaceContainerHigh` = 흰색, `primary` = 강조색).
+  - 어두운 휴식 화면(검정 배경, 낮은 타이머)은 바꾸지 않았다.
+- 실기(emulator-5554, 차량 화면 포함 전체 캡처, 증거 `app/build/reports/design-light/`):
+  - 준비 `png/l1-ready.png`
+  - 흐름 `png/f1~f7`: 쉬는 환경 스위치 3개를 앱 화면에서 잠시 끈 상태로 진행했다(공조 전원이 켜진 16C 준비 환경에서 차량 쓰기를 만들지 않기 위함). 준비 → 시작 → 10초 뒤 `dimmed` → 첫 터치 `woke`만 → `USER` 종료(복원 0) → 다시 쉬기. 끝난 뒤 스위치 3개를 다시 켰다(설정은 true/true/true/22.0/QUIET/LOW로 시작과 같음, `logs/env-switches.txt`).
+  - 흐름 구간의 차량 쓰기 요청 0, 외부 입력 0, watchdog 0(`logs/flow-writes.txt`).
+- 빌드: 최종 소스로 `./gradlew --max-workers=1 :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:lintRelease :app:assembleRelease` exit 0, 테스트 235개 통과.
+  - lint는 분석을 다시 했지만 결과가 같아 보고 파일이 갱신되지 않았다. 그래서 `lintReportDebug`·`lintReportRelease`를 다시 실행해 새로 만들었다(debug·release 모두 경고 5개, 기존과 같음).
+  - 설치된 debug APK의 sha256이 빌드 결과(`92314e43…`)와 같다.
+- 미검증:
+  - 남은 기록 카드와 [기록 지우기] 확인 대화상자의 밝은 화면(기록이 없어 띄우지 않음; 16C의 실제 기록 검증 때 확인)
+  - 첫 실행 안내, 좁은 화면, 접근성 검사

@@ -1,6 +1,7 @@
 package app.commacabin
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -20,6 +21,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -94,6 +96,12 @@ class RestActions(
 
 @Composable
 fun RestScreen(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions) {
+    // Light product colors for everything inside (dialogs included); the debug tools keep the Activity's theme.
+    MaterialTheme(colorScheme = CabinColors) { CabinScreen(state, audio, lighting, climate, actions) }
+}
+
+@Composable
+private fun CabinScreen(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions) {
     val dim = state.screen == Screen.RESTING && state.dimmed
     Box(
         Modifier
@@ -177,14 +185,14 @@ private fun TopBar(state: RestState, actions: RestActions) {
     Box(Modifier.fillMaxWidth().background(Background).padding(horizontal = 40.dp, vertical = 8.dp)) {
         BrandRow(section, if (state.screen == Screen.RESTING) null else actions.openDevTools)
     }
-    Box(Modifier.fillMaxWidth().height(1.dp).background(Card))
+    Box(Modifier.fillMaxWidth().height(1.dp).background(Line))
 }
 
 /** The screen's main button, always visible below the scrolling content. Not shown on the dim rest screen. */
 @Composable
 private fun BottomBar(state: RestState, actions: RestActions) {
     Box(Modifier.fillMaxWidth().background(Background), contentAlignment = Alignment.Center) {
-        Box(Modifier.fillMaxWidth().height(1.dp).background(Card).align(Alignment.TopCenter))
+        Box(Modifier.fillMaxWidth().height(1.dp).background(Line).align(Alignment.TopCenter))
         Column(
             Modifier.widthIn(max = 1100.dp).fillMaxWidth().padding(horizontal = 40.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -497,7 +505,11 @@ private fun LightLines(items: List<LightItemUi>) {
                         Text("원래 $original", color = TextSub, fontSize = 20.sp)
                     } else {
                         Text("원래 색", color = TextSub, fontSize = 20.sp)
-                        Box(Modifier.size(26.dp).background(Color(0xFF000000 or (original.toLong() and 0xFFFFFF)), RoundedCornerShape(6.dp)))
+                        Box(
+                            Modifier.size(26.dp)
+                                .background(Color(0xFF000000 or (original.toLong() and 0xFFFFFF)), RoundedCornerShape(6.dp))
+                                .border(1.dp, Outline, RoundedCornerShape(6.dp)),
+                        )
                     }
                 }
                 Spacer(Modifier.weight(1f))
