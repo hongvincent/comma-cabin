@@ -228,6 +228,27 @@
   - 원문 로그(빌드 산출물, 커밋하지 않음): `app/build/reports/step28-seat-emergency-stop/`.
 - 실제 앱 연결(프로세스 owner·기록 파일·변환층 생성), 수동 조정 화면, 기록 정리는 후속 단계다. F11은 계속 미충족이다.
 
+#### 4-1-7. STEP 29 확인된 시트 기록만 정리 (2026-11-13, 단위 검증만)
+
+- **범위**: 코어에 명시적 정리 메서드 `clearRecord()`, 기록 인터페이스에 `clear(expected)`, `FileSeatJournal`에 기록 파일 한 개 삭제와 디렉터리 fsync를 더했다.
+  - 앱에서 만들거나 연결하지 않았다. 실제 Android 파일·SDK·기기 호출은 0이다.
+  - 정리 계약 전체는 [../seat-recovery-format.md](../seat-recovery-format.md) 6절에 있다.
+- **허용**: 이 실행의 코어가 직접 끝낸 시도만 정리할 수 있다. 어느 경우든 정합성 판정을 통과하고, 진행 중인 시도·잠금·저장 오류가 없어야 한다.
+  - RESTORE CONFIRMED(목표 = 원래값).
+  - 앞선 기록이 없던 새 APPLY의 확실한 미전송(원래값 = 시작값, 모든 저장 성공).
+  - 증거는 한 번만 쓰고, 다음 시작이 오면 사라진다. 기록이 증거 이후 바뀌면 거부한다.
+- **거부**: APPLY 확인·HELD·UNCONFIRMED·STOP 실패, MOVE·STOP 미응답, 재시작한 코어(파일의 결과만으로는 증거가 아님), 현재값 재조회, 디스크 기록 변경·손상·다른 버전, 이미 쓴 증거, 첫 저장 실패로 SAVED가 남은 경우, RESTORE 준비 거절로 앞선 APPLY 기록이 남은 경우.
+  - 파일 계층도 정합하지 않거나 정리 대상 형태가 아닌 기록은 기대 snapshot과 같아도 지우지 않는다.
+- **좁은 보정**
+  - 공통 정합성 판정의 조건을 강화했다: STOP의 `afterMove`가 MOVE와 맞을 것, MOVE 자신의 `afterMove` = false, RESTORE 목표 = 원래값.
+  - 코어가 불러온 기록을 판정할 때 이 공통 판정을 쓴다.
+  - 코어의 새 STOP `afterMove`는 MOVE의 SDK 종료 응답이 있을 때만 true다.
+- **실패**: 정리가 실패하면 코어가 저장 오류로 고정해 이후 이동을 막고 다시 시도하지 않는다. 삭제 뒤 디렉터리 fsync가 실패하면 파일은 이미 없을 수 있다.
+- **검증**(JDK 17, `./gradlew --max-workers=1 :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`, exit 0):
+  - JUnit 372개 통과(기존 364 + 정리 8). 실패·오류·skip 0. lint 오류 0, 기존 경고 5. debug 빌드 성공(설치하지 않음).
+  - 원문 로그(빌드 산출물, 커밋하지 않음): `app/build/reports/step29-seat-record-clear/verify-full.log`.
+- 정리를 부르는 화면·owner 연결은 후속 단계다. F11은 계속 미충족이다.
+
 ### 4-2. 무드등 색
 
 1. 정상 차량 설정 앱 라이트 > 무드 조명 [켜기] → SDK 스위치 ON.

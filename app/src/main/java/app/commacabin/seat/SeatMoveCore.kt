@@ -29,6 +29,9 @@ import kotlin.math.abs
  * - A timeout ends nothing: the request stays pending in memory and in the journal and keeps [SeatMoveState.lock].
  *   Late answers only update their own request. Nothing starts by itself: no resume, retry or deletion.
  * - Time comes only from [scheduler] delays (the app's Handler uses uptime, not the wall clock).
+ * - The record is removed only by [clearRecord], an explicit call of the owner, with completion evidence made in this
+ *   run: a confirmed RESTORE, or a new APPLY certainly never sent (no earlier record of the job, original == start).
+ *   Never on load, timeout, read, screen end or start; a restarted core holds no evidence.
  */
 class SeatMoveCore(
     private val axis: SeatAxis,
@@ -55,8 +58,11 @@ class SeatMoveCore(
     private val usedIds = mutableSetOf<String>()
     /** Counts STOP requests: a MOVE queued before one is refused at its gate. */
     private var stopSeq = 0
+    /** The exact snapshot of an attempt this run finished and may remove; one use, gone with the next begin. */
+    private var evidence: SeatSnapshot? = null
 
-    private class Run(val req: SeatMoveRequest, val command: Move, val stops: Int) {
+    /** [hadRecord]: the journal already held a snapshot (of this job) when the attempt began. */
+    private class Run(val req: SeatMoveRequest, val command: Move, val stops: Int, val hadRecord: Boolean) {
         var phase = SeatPhase.PREPARING
         var watch: AutoCloseable? = null
         var registered = false
@@ -101,9 +107,10 @@ class SeatMoveCore(
             return why
         }
         usedIds += listOf(req.moveRequestId, req.stopRequestId, req.finalStopRequestId)
+        evidence = null
         val l = req.limits
         val decrease = if (l.increaseWith == Move.FORWARD) Move.BACKWARD else Move.FORWARD
-        val run = Run(req, if (req.target > req.start) l.increaseWith else decrease, stopSeq)
+        val run = Run(req, if (req.target > req.start) l.increaseWith else decrease, stopSeq, hadRecord = snap != null)
         current = run
         update { SeatMoveState(jobId = req.jobId) }
         run.timers += scheduler.schedule(l.answerMs) {
@@ -340,7 +347,7 @@ class SeatMoveCore(
         cancelTimers(run)
         run.confirmSeq++
         run.phase = SeatPhase.STOPPING
-        mark(run) { copy(stops = stops + SeatRequestMark(id, SeatRequestState.ENTERING, afterMove = move.terminal)) }
+        mark(run) { copy(stops = stops + SeatRequestMark(id, SeatRequestState.ENTERING, afterMove = move.state == SeatRequestState.COMPLETED || move.state == SeatRequestState.FAILED)) }
         update { copy(outcome = null, reason = "STOP($reason)", reads = emptyList()) }
         log("STOP($reason) #$id 보냄")
         val ms = run.req.limits.answerMs
@@ -458,6 +465,7 @@ class SeatMoveCore(
         run.watch = null
         run.phase = SeatPhase.DONE
         current = null
+        evidence = snap?.takeIf { run.saved && storageFault == null && removable(it, run) }
         log("시트 작업 ${run.req.jobId} 끝: $outcome, $why")
         update { copy(phase = SeatPhase.DONE, outcome = outcome, reason = why, reads = run.reads.toList()) }
     }
@@ -491,14 +499,44 @@ class SeatMoveCore(
     /** Finished, every request answered, and consistent with its outcome. Anything else from an earlier run locks. */
     private fun settled(s: SeatSnapshot): Boolean {
         val ids = ids(s)
-        if (s.axis != axis || ids.toSet().size != ids.size || !s.move.terminal || s.stops.any { !it.terminal }) return false
-        val ended = s.stops.lastOrNull { it.afterMove }?.state == SeatRequestState.COMPLETED
-        return when (s.outcome) {
-            SeatOutcome.NOT_SENT -> s.move.state == SeatRequestState.NOT_SENT
-            SeatOutcome.CONFIRMED, SeatOutcome.UNCONFIRMED -> s.move.state == SeatRequestState.COMPLETED && ended && s.held == null
-            SeatOutcome.HELD -> s.move.entered && ended && s.held != null
-            SeatOutcome.STOP_FAILED, null -> false
+        return s.axis == axis && ids.toSet().size == ids.size && s.stoppedConsistently()
+    }
+
+    /**
+     * This run's finished attempt whose record may go: its own IDs, consistent, and either a confirmed RESTORE
+     * (target == original) or a new APPLY certainly never sent (no earlier record of the job, original == start).
+     */
+    private fun removable(s: SeatSnapshot, run: Run): Boolean =
+        s.jobId == run.req.jobId && s.move.requestId == run.req.moveRequestId && s.purpose == run.req.purpose && s.removableShape() &&
+            (s.outcome != SeatOutcome.NOT_SENT || !run.hadRecord)
+
+    /**
+     * Removes the record of the attempt this run just finished, only with its evidence (see [removable]), nothing running,
+     * no lock or storage fault, and the record unchanged since. null = removed: the next job may start (used request IDs
+     * are kept). A failure latches a storage fault: the file may already be gone, so every later MOVE is refused.
+     */
+    fun clearRecord(): String? {
+        val expected = evidence
+        val why = when {
+            loadLock != null -> loadLock
+            storageFault != null -> storageFault
+            current != null -> "진행 중인 시트 작업이 있어 기록을 정리하지 않아요"
+            expected == null -> "이 실행에서 정리해도 되는 완료 증거가 없어요"
+            snap != expected -> "기록이 완료 증거 이후 바뀌어 정리하지 않아요"
+            else -> null
         }
+        if (why != null) return why.also { log("시트 기록 정리 거부: $it") }
+        evidence = null
+        if (!journal.clear(expected!!)) {
+            storageFault = "시트 기록 정리 실패. 기록이 이미 지워졌을 수 있어 새 이동을 막아요"
+            log(storageFault!!)
+            update()
+            return storageFault
+        }
+        snap = null
+        log("시트 기록 정리(${expected.jobId}, ${expected.purpose} ${expected.outcome})")
+        update()
+        return null
     }
 
     private fun lock(): String? = loadLock ?: storageFault ?: current?.let { run ->
@@ -516,7 +554,7 @@ class SeatMoveCore(
     private fun update(change: SeatMoveState.() -> SeatMoveState = { this }) {
         val next = state.change()
         state = next.copy(phase = current?.phase ?: next.phase, snapshot = snap)
-        state = state.copy(lock = lock())
+        state = state.copy(lock = lock(), clearable = evidence != null && evidence == snap)
         onState(state)
     }
 }

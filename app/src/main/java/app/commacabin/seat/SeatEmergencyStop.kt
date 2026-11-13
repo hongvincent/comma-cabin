@@ -30,7 +30,7 @@ data class SeatRecoveryState(
  *
  * - No call: Empty; Unreadable; a snapshot whose target cannot be trusted (not BACKREST, blank or repeated request
  *   IDs). The last two are locked for a manual check; nothing is written or invented.
- * - No call, no lock: a BACKREST snapshot consistently stopped (outcome and every request agree, see [consistentlyStopped]).
+ * - No call, no lock: a BACKREST snapshot consistently stopped (outcome and every request agree, see [stoppedConsistently]).
  * - Otherwise one STOP at [start] and a lock that never lifts here: outcome null (SAVED is no proof of not sending in
  *   an earlier run), STOP_FAILED, or an outcome that its requests contradict.
  * - Each STOP gets a new internal ID, is appended to the snapshot and saved before it is sent (a failed save latches
@@ -85,34 +85,13 @@ class SeatEmergencyStop(
         when {
             s.axis != SeatAxis.BACKREST -> manual("지원하지 않는 축(${s.axis.name})의 시트 기록이에요")
             s.jobId.isBlank() || ids.any { it.isBlank() } || ids.toSet().size != ids.size -> manual("시트 기록의 요청 ID가 비었거나 겹쳐요")
-            consistentlyStopped(s) -> update()
+            s.stoppedConsistently() -> update()
             else -> {
                 responsible = true
                 val why = if (s.outcome == null) "이전 실행의 시트 요청이 끝났는지 알 수 없어요" else "이전 실행의 시트 기록(${s.outcome})이 요청 상태와 맞지 않거나 STOP이 실패했어요"
                 state = state.copy(lock = "$why. 새 이동·복원·기록 삭제를 막아요", notice = "$why. 비상 STOP을 보냈어도 실제 정지와 원래 위치는 직접 확인해야 해요")
                 send("이전 실행 미완료 기록")
             }
-        }
-    }
-
-    /**
-     * The outcome and every request agree that the seat was stopped, or that no MOVE was ever sent: every request ended,
-     * afterMove fits the MOVE (true only once the MOVE's own answer exists, and never back to false after a true), and
-     * - NOT_SENT: MOVE NOT_SENT and only STOPs sent before (afterMove false), each answered or failed;
-     * - CONFIRMED/UNCONFIRMED: MOVE COMPLETED, the latest STOP after it COMPLETED, no held cause;
-     * - HELD: MOVE COMPLETED or FAILED, the latest STOP after it COMPLETED, a held cause.
-     */
-    private fun consistentlyStopped(s: SeatSnapshot): Boolean {
-        val allEnded = s.move.terminal && s.stops.all { it.terminal }
-        val moveAnswered = s.move.state == SeatRequestState.COMPLETED || s.move.state == SeatRequestState.FAILED
-        val firstAfter = s.stops.indexOfFirst { it.afterMove }
-        val afterMoveFits = firstAfter < 0 || (moveAnswered && s.stops.drop(firstAfter).all { it.afterMove })
-        val stoppedAfterMove = s.stops.lastOrNull { it.afterMove }?.state == SeatRequestState.COMPLETED
-        return allEnded && afterMoveFits && when (s.outcome) {
-            SeatOutcome.NOT_SENT -> s.move.state == SeatRequestState.NOT_SENT && firstAfter < 0
-            SeatOutcome.CONFIRMED, SeatOutcome.UNCONFIRMED -> s.move.state == SeatRequestState.COMPLETED && stoppedAfterMove && s.held == null
-            SeatOutcome.HELD -> moveAnswered && stoppedAfterMove && s.held != null
-            SeatOutcome.STOP_FAILED, null -> false
         }
     }
 

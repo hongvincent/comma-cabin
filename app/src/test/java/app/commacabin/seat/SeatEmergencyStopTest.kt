@@ -36,6 +36,7 @@ private class CountingJournal(val inner: SeatJournal) : SeatJournal {
     var loads = 0
     override fun load(): SeatJournalLoad = inner.load().also { loads++ }
     override fun save(snapshot: SeatSnapshot): Boolean = inner.save(snapshot)
+    override fun clear(expected: SeatSnapshot): Boolean = inner.clear(expected)
 }
 
 class SeatEmergencyStopTest {

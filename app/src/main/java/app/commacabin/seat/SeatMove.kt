@@ -42,12 +42,18 @@ interface SeatAxisPort {
     fun endMotion(motionKey: String)
 }
 
-/** Durable journal of one seat job. The core never deletes it: clean-up belongs to the next step. */
+/** Durable journal of one seat job. Removed only by [clear], on the owner's explicit call through the core. */
 interface SeatJournal {
     fun load(): SeatJournalLoad
 
     /** True only once [snapshot] is durably stored. */
     fun save(snapshot: SeatSnapshot): Boolean
+
+    /**
+     * Removes the stored snapshot only when it is exactly [expected] and that one is finished (outcome set, every
+     * request ended). True only once the removal is durable. A false result is no proof that nothing was removed.
+     */
+    fun clear(expected: SeatSnapshot): Boolean
 }
 
 sealed interface SeatJournalLoad {
@@ -175,4 +181,41 @@ data class SeatMoveState(
     val snapshot: SeatSnapshot? = null,
     /** Why no new move, restore or record deletion may start now; null = nothing blocks it here. */
     val lock: String? = null,
+    /** This run finished an attempt whose record [SeatMoveCore.clearRecord] may remove (once). */
+    val clearable: Boolean = false,
 )
+
+/**
+ * The outcome and every request agree that the seat was stopped, or that no MOVE was ever sent: every request ended,
+ * afterMove fits the MOVE (true only once the MOVE's own answer exists, and never back to false after a true), and
+ * - NOT_SENT: MOVE NOT_SENT and only STOPs sent before (afterMove false), each answered or failed;
+ * - CONFIRMED/UNCONFIRMED: MOVE COMPLETED, the latest STOP after it COMPLETED, no held cause;
+ * - HELD: MOVE COMPLETED or FAILED, the latest STOP after it COMPLETED, a held cause.
+ * The MOVE itself never has afterMove, and a RESTORE always targets its original. A single outcome field is never
+ * trusted on its own.
+ */
+internal fun SeatSnapshot.stoppedConsistently(): Boolean {
+    if (move.afterMove || (purpose == SeatPurpose.RESTORE && target != original)) return false
+    val allEnded = move.terminal && stops.all { it.terminal }
+    val moveAnswered = move.state == SeatRequestState.COMPLETED || move.state == SeatRequestState.FAILED
+    val firstAfter = stops.indexOfFirst { it.afterMove }
+    val afterMoveFits = firstAfter < 0 || (moveAnswered && stops.drop(firstAfter).all { it.afterMove })
+    val stoppedAfterMove = stops.lastOrNull { it.afterMove }?.state == SeatRequestState.COMPLETED
+    return allEnded && afterMoveFits && when (outcome) {
+        SeatOutcome.NOT_SENT -> move.state == SeatRequestState.NOT_SENT && firstAfter < 0
+        SeatOutcome.CONFIRMED, SeatOutcome.UNCONFIRMED -> move.state == SeatRequestState.COMPLETED && stoppedAfterMove && held == null
+        SeatOutcome.HELD -> moveAnswered && stoppedAfterMove && held != null
+        SeatOutcome.STOP_FAILED, null -> false
+    }
+}
+
+/**
+ * The only snapshots a clean-up may remove, judged from the snapshot alone: consistent and either a confirmed RESTORE
+ * back to its original or an APPLY never sent from its original. Whether this run made the evidence (and whether the
+ * job had an earlier record) is [SeatMoveCore]'s check; nothing here makes such evidence.
+ */
+internal fun SeatSnapshot.removableShape(): Boolean = stoppedConsistently() && when (outcome) {
+    SeatOutcome.CONFIRMED -> purpose == SeatPurpose.RESTORE && target == original
+    SeatOutcome.NOT_SENT -> purpose == SeatPurpose.APPLY && original == start
+    else -> false
+}

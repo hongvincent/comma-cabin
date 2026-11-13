@@ -313,6 +313,10 @@ private class StrictJsonReader(private val s: String) {
  *   afterMove); a new MOVE ID (the next attempt) only once every earlier request ended, reusing none of their IDs.
  *   Writing: temp file in the same directory → fsync → atomic replace (no fallback) → fsync of the directory; true
  *   only after all of it. A false save may still have replaced the file.
+ * - [clear] deletes exactly this one file (never the temp file, another file or a directory), only when the file reads
+ *   as exactly the expected snapshot and that one has a removable shape (consistent; a confirmed RESTORE to its
+ *   original or an APPLY never sent from its original), then fsyncs the directory; true only after both. Whether the
+ *   caller's run made that evidence is not known here. A false clear after the delete step may have removed the file.
  */
 class FileSeatJournal(
     private val file: File,
@@ -320,6 +324,8 @@ class FileSeatJournal(
     private val replace: (Path, Path) -> Unit = { from, to -> Files.move(from, to, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING) },
     /** Opens the file for reading; replaceable only to inject a read failure in tests. */
     private val openRead: (Path) -> InputStream = { Files.newInputStream(it) },
+    /** Deletes exactly the journal file; replaceable only to inject a delete failure in tests. */
+    private val remove: (Path) -> Unit = { Files.delete(it) },
 ) : SeatJournal {
     /** Why the last save failed (the step and the exception type, no values or paths); null after a success. */
     var lastError: String? = null
@@ -381,6 +387,27 @@ class FileSeatJournal(
             true
         } catch (e: Exception) {
             fail("저장 실패($step, ${e.javaClass.simpleName}). 주 파일이 바뀌지 않았다고 단정하지 않음")
+        }
+    }
+
+    override fun clear(expected: SeatSnapshot): Boolean {
+        // Shape only (see removableShape); this run's evidence is the core's to hold, never made here.
+        if (!expected.removableShape()) return fail("정리할 수 있는 완료 기록이 아님")
+        when (val current = load()) {
+            SeatJournalLoad.Empty -> return fail("정리할 기록이 없음")
+            is SeatJournalLoad.Unreadable -> return fail("읽을 수 없는 기록은 정리하지 않음(${current.reason})")
+            is SeatJournalLoad.Found -> if (current.snapshot != expected) return fail("디스크 기록이 기대한 기록과 달라 정리하지 않음")
+        }
+        var step = "기록 파일 삭제"
+        return try {
+            val dir = file.absoluteFile.parentFile ?: throw IOException("no parent")
+            remove(file.toPath())
+            step = "디렉터리 fsync"
+            syncDirectory(dir)
+            lastError = null
+            true
+        } catch (e: Exception) {
+            fail("정리 실패($step, ${e.javaClass.simpleName}). 기록 파일이 이미 지워졌을 수 있음")
         }
     }
 

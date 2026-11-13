@@ -158,6 +158,17 @@ class FakeJournal(private val events: MutableList<String>, var stored: SeatSnaps
         events += "save:${snapshot.move.state}"
         return true
     }
+
+    var failClear = false
+    var clears = 0
+
+    override fun clear(expected: SeatSnapshot): Boolean {
+        events += "clear"
+        if (failClear || stored != expected) return false
+        clears++
+        stored = null
+        return true
+    }
 }
 
 val LIMITS = SeatMoveLimits(
