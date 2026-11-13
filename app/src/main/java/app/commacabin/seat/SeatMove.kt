@@ -7,8 +7,8 @@ import app.commacabin.probe.ProbeError
 
 /*
  * STEP 25 contract of the seat target-move core ([SeatMoveCore]).
- * Boundary: no SDK adapter and no journal file/DB implements these ports yet. Only unit-test fakes do, and nothing in
- * the app creates the core, so no real or emulated seat has been moved by it.
+ * Implemented by [ControlSeatAxisPort] (STEP 27, backrest over the existing ControlPort) and [FileSeatJournal]
+ * (STEP 26). Nothing in the app creates them or the core yet, so no real or emulated seat has been moved by it.
  */
 
 /**

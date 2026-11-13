@@ -121,7 +121,8 @@ class SeatMoveLaneTest {
         val core = SeatMoveCore(SeatAxis.BACKREST, port, journal, scheduler, { null }, { null })
         sdk.position = 20
         assertNull(core.begin(req(start = 20, target = 60, limits = lim)))
-        assertTrue(runMainUntil { lane.motion != null && core.state.phase == SeatPhase.MOVING })
+        // The lane reserves the motion just before the worker enters the SDK call: wait for that call as well.
+        assertTrue(runMainUntil { lane.motion != null && core.state.phase == SeatPhase.MOVING && sdk.calls.contains("move FORWARD") })
         assertEquals("move-1", lane.motion?.second)
         assertEquals(listOf("register", "read", "move FORWARD"), sdk.calls.toList())
 

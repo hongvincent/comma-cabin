@@ -10,8 +10,9 @@ import kotlin.math.abs
 
 /**
  * STEP 25: moves one axis of the driver seat toward a target and confirms it only from reads taken after the motion
- * ended. Pure Kotlin, main thread only. NOT connected to the app: no SDK adapter and no journal file exist yet (only
- * test fakes), so nothing here proves a real or emulated seat moves. Do not wire it before the environment check.
+ * ended. Pure Kotlin, main thread only. NOT connected to the app: its adapter ([ControlSeatAxisPort]) and journal file
+ * ([FileSeatJournal]) exist but nothing in the app creates them, so nothing here proves a real or emulated seat moves.
+ * Do not wire it before the environment check.
  *
  * - Before a MOVE: the listener registration is confirmed, a read equals [SeatMoveRequest.start], and the journal
  *   saved this attempt. At the MOVE's gate (right before the SDK entry): same attempt, no STOP since, listener sound and
