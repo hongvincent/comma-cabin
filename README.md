@@ -2,7 +2,7 @@
 
 픽업 장소에 일찍 도착한 운전자가 주차한 차에서 빗소리를 들으며 쉬는 Pleos Connect 앱입니다. **19:30 픽업이라면 19:28에 빗소리를 끕니다. 조수석 문이 먼저 열리면 그때 바로 멈춥니다.**
 
-[서명된 APK 받기](https://github.com/hongvincent/comma-cabin/releases/tag/v0.2.0) · [설치와 실행](#설치와-실행) · [에뮬레이터 검증 기록](docs/verification.md)
+[조명 제어 APK 받기](https://github.com/hongvincent/comma-cabin/releases/tag/v0.2.0-ambient.1) · [설치와 실행](#설치와-실행) · [에뮬레이터 검증 기록](docs/verification.md)
 
 ## 숏폼과 제품 기획
 
@@ -10,7 +10,7 @@
 
 | 자료 | 볼 수 있는 내용 |
 | --- | --- |
-| [쉼표 캐빈 숏폼 · MP4](docs/media/shortform.mp4?raw=true) | 은은한 차 안에서 빗소리와 함께 쉬는 시간. 19:28 예정 종료와 조수석 문이 먼저 열릴 때의 종료를 각각 담았습니다. 세로 1080 × 1920, 37초. |
+| [쉼표 캐빈 숏폼 · MP4](docs/media/shortform.mp4?raw=true) | 은은한 차 안에서 빗소리와 함께 쉬는 시간. 예정 종료와 조수석 문이 먼저 열릴 때의 종료를 각각 담았습니다. 세로 1080 × 1920, 33.75초. 차량과 조명 변화는 생성·합성한 장면이고 앱 화면은 실제 에뮬레이터 녹화입니다. |
 | [앰비언트 경험 기획](docs/ambient-concept.md) | 퇴근·충전·픽업 대기에서 빛과 소리로 쉬는 경험과 현재 구현, 후속 검증을 정리했습니다. |
 | [Manyfast PRD](docs/manyfast-prd.md) | 제품이 해결하는 문제와 초기 사용자, 요구사항, 검증 기준, 후속 계획을 정리했습니다. |
 | [Pleos 검증 기록](docs/verification.md) | 픽업 2분 전 종료와 조수석 문 열림 종료의 에뮬레이터 실측과 재현 방법을 볼 수 있습니다. |
@@ -40,7 +40,7 @@
 | 항목 | 값 |
 | --- | --- |
 | 앱 | `app.commacabin` · v0.2.0 · 서명된 release APK |
-| 설치 파일 | [GitHub Release v0.2.0](https://github.com/hongvincent/comma-cabin/releases/tag/v0.2.0) · [저장소의 APK](apk/쉼표캐빈_쉼표캐빈_release.apk) |
+| 설치 파일 | [조명 제어 검증 릴리스 v0.2.0-ambient.1](https://github.com/hongvincent/comma-cabin/releases/tag/v0.2.0-ambient.1) · [저장소의 APK](apk/쉼표캐빈_쉼표캐빈_release.apk) |
 | 검증 환경 | Pleos Connect Emulator **2.1.0** · Android Automotive OS **API 34** · arm64-v8a |
 | 디스플레이 | **2560 × 1440** · 160 dpi |
 | SDK | Pleos Vehicle SDK **2.3.2** |
@@ -76,10 +76,10 @@ adb -e logcat -v threadtime -s CommaCabin:I CabinVehicle:I
 | --- | --- | --- |
 | 조수석 문 | Pleos Vehicle SDK `Door` · `ROW_1_RIGHT` | 오른쪽 앞문 상태를 조회하고 변경을 구독합니다. 닫힘이 확인될 때만 시작하고, 문이 열리거나 문 신호가 끊기면 종료합니다. |
 | 기어와 주행 제한 | Android Automotive `GEAR_SELECTION` · `CarUxRestrictionsManager` | P 기어에서 화면 사용이 허용될 때 시작합니다. P를 벗어나거나 주행 제한이 걸리면 종료합니다. |
-| 앰비언트 조명 밝기 | Pleos Vehicle SDK `Light` | 지원 좌석의 밝기 값을 읽으며 운전석을 우선합니다. 휴식 중 앱 창의 밝기에 반영하고, 지원 값이 없으면 시스템 밝기를 사용합니다. |
+| 앰비언트 조명 밝기 | Pleos Vehicle SDK `Light` | 읽기·쓰기가 지원되는 영역에서 현재 밝기를 읽고 휴식 시작 시 네 단계로 절반까지 낮춥니다. 각 단계는 SDK 재조회로 확인합니다. 종료 시 앱이 마지막으로 확인한 값이 유지되면 원래 밝기를 복원하고, 사용자가 중간에 변경한 값은 유지합니다. |
 | 빗소리와 오디오 포커스 | Android `MediaPlayer` · `AudioManager` | 앞유리에 떨어지는 빗소리의 현장 녹음을 미디어 경로로 반복 재생합니다. 오디오 포커스를 잃거나 앱 화면을 떠나면 종료합니다. [음원 출처와 편집 내역](docs/audio.md) |
 
-픽업 시각은 앱에서 직접 설정합니다. 현재 구현 범위는 차량 상태 읽기, 앱 화면 밝기, 미디어 재생입니다. 차량 조명 제어, 서라운드 채널 제어, 내비게이션과 픽업 서비스 연동은 후속 범위입니다. 실차 동작은 별도 검증이 필요합니다.
+픽업 시각은 앱에서 직접 설정합니다. 에뮬레이터의 조명 밝기 값 제어를 확인했습니다. 실제 차량의 LED 출력, 색상, 여러 좌석 동작, 서라운드 채널 제어, 내비게이션과 픽업 서비스 연동은 후속 검증·개발 범위입니다. 강제 종료나 매우 늦은 SDK 응답, 사용자 조작과 쓰기가 겹칠 때는 원상복구를 보장하지 못합니다. 배포에 필요한 제어 권한은 별도 심사와 승인 조건을 확인해야 합니다.
 
 ## 화면과 조작
 
@@ -101,6 +101,7 @@ JDK 17, Android SDK Platform 34, Build Tools 35.0.0을 준비합니다. SDK에 `
 | 파일 | 역할 |
 | --- | --- |
 | [RestRules.java](app/src/main/java/app/commacabin/RestRules.java) | 픽업 2분 전 종료, 최소 휴식 1분, 종료 사유 판단 |
+| [AmbientDimming.java](app/src/main/java/app/commacabin/AmbientDimming.java) | 지원 영역의 밝기 단계 제어와 재확인, 종료 시 기존 값 복원 |
 | [VehicleSignals.java](app/src/main/java/app/commacabin/VehicleSignals.java) | Pleos Vehicle SDK와 Android Automotive에서 차량 상태 읽기 |
 | [MainActivity.java](app/src/main/java/app/commacabin/MainActivity.java) · [CabinScreen.java](app/src/main/java/app/commacabin/CabinScreen.java) | 재생과 정지, 시각 설정, 차량용 화면 |
 | [checks/run.sh](checks/run.sh) | Android 없이 실행하는 종료 규칙 검사 |

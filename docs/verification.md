@@ -1,8 +1,24 @@
 # Pleos 에뮬레이터 검증
 
-2026년 11월 12일, Pleos Connect Emulator 2.1.0(Android Automotive OS API 34, arm64-v8a, 2560 × 1440, 160 dpi)의 분할 화면에서 `app.commacabin` v0.2.0 release를 설치해 확인했습니다.
+2026년 11월 13일, Pleos Connect Emulator 2.1.0(Android Automotive OS API 34, arm64-v8a, 2560 × 1440, 160 dpi)에서 조명 제어 APK를 설치해 확인했습니다. APK의 앱 버전 표시는 v0.2.0이며 조명 제어 검증 릴리스 태그는 `v0.2.0-ambient.1`입니다.
 
-서명된 APK의 SHA-256은 `ec4355aad8de365d4280b30627aa53ae100541254af0da94c0be84cc1c5b18af`입니다.
+서명된 APK의 SHA-256은 `bdee9261285865be61d7a92a3119a98718b72d0b6ad38d5f6884648fd1a60ba3`입니다.
+
+## 앰비언트 조명 제어 실측
+
+| 상황 | Virtual Console에서 재조회한 밝기 |
+| --- | --- |
+| 초기 80에서 휴식 시작 | 70 → 60 → 50 → 40 |
+| 조수석 문을 먼저 열어 휴식 종료 | 80 복원, `PASSENGER_DOOR`, 재생 정지 |
+| 19:30 픽업, 문 닫힘 | 시험을 위해 시계를 19:27:58로 맞춘 후 19:28에 `DEADLINE`, 재생 정지와 밝기 80 복원 |
+| 재생 중 사용자가 밝기를 65로 변경 | 문을 열어 종료한 후에도 65 유지 |
+| P에서 D로 변경 | 재생 정지와 밝기 80 복원, P 복귀 시 자동 재생 없음 |
+
+테스트 후 초기 밝기 100을 복원했습니다. 실제 차량의 LED 출력과 색상, 여러 좌석 조명의 반응, 스피커 출력 지연은 검증 전입니다. 매우 늦은 SDK 쓰기나 강제 종료, 사용자 조작과 이미 전송된 쓰기가 겹칠 경우 원상복구는 보장되지 않습니다. [SDK 권한 안내](https://document.pleos.ai/en/docs/pleos-only/connect-sdk-pleos/Vehicle/vehicle-permission)
+
+## 이전 v0.2.0 검증 기록
+
+아래 시각과 화면은 11월 12일 기존 `ec4355aad8de365d4280b30627aa53ae100541254af0da94c0be84cc1c5b18af` APK에서 측정했습니다.
 
 ## 실측 결과
 
