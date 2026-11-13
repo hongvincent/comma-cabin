@@ -187,6 +187,23 @@
   - 원문 로그(빌드 산출물, 커밋하지 않음): `app/build/reports/step26-seat-journal/fix1-verify-full.log`.
 - 앱 연결(`filesDir`·lease·owner), 기록 정리, 자동 복원, 전역 비상 STOP은 후속 단계다. F11은 계속 미충족이다.
 
+#### 4-1-5. STEP 27 시트 코어와 기존 공개 SDK 포트 사이 변환층 (2026-11-13, 단위 검증만)
+
+- **범위**: 코어의 `SeatAxisPort`를 기존 `ControlPort`(앱에서는 SdkLane 위의 `PleosControlPort`)에 잇는 얇은 변환층(`seat/ControlSeatAxisPort.kt`)을 만들었다.
+  - 새 SDK 호출, 스레드, 대기열, gate, 타이머는 없다.
+  - 앱에서 만들거나 연결하지 않았다. 실제 SDK·기기 호출은 0이다.
+- **대상**: 운전석(`ROW_1_LEFT`) 등받이(`ControlProp.SEAT_BACKREST`)만 지원한다. 다른 축은 조회·리스너·STOP을 오류로, MOVE를 미전송으로 거부하며, 하위 포트를 호출하지 않는다. 생성자는 아무것도 호출하지 않는다.
+- **위치 변환**: `ControlPort`의 문자열이 정규 Int 형식일 때만 값으로 넘긴다(`"0"`은 0, null은 값 없음). 소수, 공백, 범위 밖, 앞자리 0 같은 형식은 조회와 리스너 모두 `InvalidSeatPosition` 오류다. 0으로 고치거나 잘라 쓰지 않는다.
+- **리스너**: handle을 받았다고 등록된 것으로 보지 않는다. 하위의 등록 결과와 리스너 오류를 그대로 전달하고, 닫기도 하위 handle에 넘긴다. 늦은 콜백을 걸러 내지 않는다(판정은 코어의 몫).
+- **MOVE**: 호출자의 `Dispatch`를 그대로 하위에 넘긴다(gate·onStart를 미리 실행하지 않는다). 하위에 넘기지 않은 것이 확실한 경우(다른 축, STOP을 MOVE로 요청, 빈 예약 키)만 onNotSent로 알린다. 하위 오류는 그대로 오류로 전달한다.
+- **STOP**: 기존 `ControlPort`의 STOP 경로(맨 앞, gate 없음)를 쓴다. 소스로 확인한 결과 `PleosControlPort`는 STOP에서 예약 키와 dispatch를 쓰지 않아, 빈 키와 `Dispatch.NONE`을 넘긴다. `StopAlreadyQueued` 같은 거부는 실패로 전달한다. 변환층은 요청받은 등받이 STOP을 그대로 전달할 수 있다. 다만 시트의 전역 소유권과 이전 실행의 이동을 복구하는 정책은 정하지도 구현하지도 않았다.
+- **이동 예약 해제**: `endMotion`은 코어가 준 정확한 키를 그대로 넘길 때만 호출한다. 콜백이나 시간 경과로 스스로 해제하지 않는다.
+- **검증**(JDK 17, `./gradlew --max-workers=1 :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`, exit 0):
+  - JUnit 355개 통과(기존 347 + 변환층 8, 가짜 `ControlPort` 사용). 실패·오류·skip 0.
+  - lint 오류 0, 기존 경고 5. debug 빌드 성공(설치하지 않음).
+  - 원문 로그(빌드 산출물, 커밋하지 않음): `app/build/reports/step27-seat-adapter/verify-full.log`.
+- 지원 조회·환경 신뢰·실측 제한값 검증, 실제 owner 생성, 기록 파일 연결, 전역 비상 STOP은 후속 단계다. 현재 이미지의 위치 Int 0 문제는 그대로이고, F11은 계속 미충족이다.
+
 ### 4-2. 무드등 색
 
 1. 정상 차량 설정 앱 라이트 > 무드 조명 [켜기] → SDK 스위치 ON.
