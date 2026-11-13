@@ -76,7 +76,7 @@ public final class MainActivity extends Activity {
     @Override protected void onStart() {
         super.onStart();
         visible = true;
-        vehicle = new VehicleSignals(this, state -> {
+        if (vehicle == null) vehicle = new VehicleSignals(this, state -> {
             if (!visible) return;
             if (!state.equals(signals)) {
                 Log.i(TAG, "signals time=" + trace(Instant.now()) + " parked=" + state.parked()
@@ -101,7 +101,6 @@ public final class MainActivity extends Activity {
         main.removeCallbacks(tick);
         if (vehicle != null) {
             vehicle.close();
-            vehicle = null;
         }
         signals = NO_SIGNALS;
         super.onStop();
@@ -179,6 +178,7 @@ public final class MainActivity extends Activity {
             sessionEnd = end;
             sessionElapsedLimit = SystemClock.elapsedRealtime() + Duration.between(now, end).toMillis();
             player.start();
+            if (vehicle != null) vehicle.setResting(true);
             Log.i(TAG, "started time=" + trace(Instant.now()) + " pickup=" + pickup
                     + " deadline=" + trace(end) + " isPlaying=" + player.isPlaying());
         } catch (RuntimeException e) {
@@ -207,6 +207,7 @@ public final class MainActivity extends Activity {
     private void stopRest(RestRules.End reason) {
         MediaPlayer previous = player;
         if (previous == null && focus == null) return;
+        if (vehicle != null) vehicle.setResting(false);
         player = null;
         stopReason = reason;
         stoppedAt = Instant.now();

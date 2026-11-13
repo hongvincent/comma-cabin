@@ -6,6 +6,7 @@ import ai.pleos.playground.vehicle.api.Light;
 import ai.pleos.playground.vehicle.api.model.area.DoorArea;
 import ai.pleos.playground.vehicle.api.model.area.SeatArea;
 import ai.pleos.playground.vehicle.api.model.capability.AccessType;
+import ai.pleos.playground.vehicle.api.model.capability.AreaBounds;
 import ai.pleos.playground.vehicle.constant.area.DoorValue;
 import ai.pleos.playground.vehicle.constant.area.SeatValue;
 import ai.pleos.playground.vehicle.listener.AmbientLightBrightnessListener;
@@ -24,7 +25,7 @@ import android.util.Log;
 import java.util.function.Consumer;
 import kotlin.Unit;
 
-/** Read-only signals on the Activity's main thread. Live door events lead; periodic reads check the SDK connection. */
+/** Vehicle signals and optional ambient brightness control on the Activity's main thread. */
 final class VehicleSignals implements AutoCloseable {
     enum DoorState { UNKNOWN, CLOSED, OPEN, UNSUPPORTED }
 
@@ -43,6 +44,10 @@ final class VehicleSignals implements AutoCloseable {
     private final Consumer<State> onChange;
     private final Handler main = new Handler(Looper.getMainLooper());
     private Session session;
+    private static boolean closing;
+    private static int releasingBindings;
+    private static VehicleSignals waitingStart;
+    private boolean startRequested;
 
     VehicleSignals(Context context, Consumer<State> onChange) {
         this.context = context.getApplicationContext();
@@ -51,6 +56,11 @@ final class VehicleSignals implements AutoCloseable {
 
     void start() {
         requireMainThread();
+        if (closing || releasingBindings > 0) {
+            startRequested = true;
+            waitingStart = this;
+            return;
+        }
         if (session != null) return;
         Session started = new Session();
         session = started;
@@ -58,13 +68,36 @@ final class VehicleSignals implements AutoCloseable {
         if (session == started) started.connect();
     }
 
+    void setResting(boolean resting) {
+        requireMainThread();
+        if (session == null) return;
+        session.resting = resting;
+        if (session.pleos != null) session.pleos.setResting(resting);
+    }
+
     @Override public void close() {
         requireMainThread();
+        startRequested = false;
+        if (waitingStart == this) waitingStart = null;
         Session previous = session;
         if (previous == null) return;
         session = null;
+        closing = true;
         main.removeCallbacksAndMessages(null);
-        previous.close();
+        previous.close(() -> {
+            closing = false;
+            startWaiting();
+        });
+    }
+
+    private static void startWaiting() {
+        if (closing || releasingBindings > 0) return;
+        VehicleSignals waiting = waitingStart;
+        waitingStart = null;
+        if (waiting != null && waiting.startRequested) {
+            waiting.startRequested = false;
+            waiting.start();
+        }
     }
 
     private static void requireMainThread() {
@@ -81,6 +114,7 @@ final class VehicleSignals implements AutoCloseable {
         private boolean drivingAllowed;
         private DoorState door = DoorState.UNKNOWN;
         private Integer brightness;
+        private boolean resting;
         private State lastState;
 
         void connect() {
@@ -121,10 +155,11 @@ final class VehicleSignals implements AutoCloseable {
             onChange.accept(updated);
         }
 
-        void close() {
+        void close(Runnable completed) {
             if (aaos != null) aaos.close();
             if (car != null) cleanUp("disconnect AAOS", car::disconnect);
-            if (pleos != null) pleos.close();
+            if (pleos != null) pleos.close(completed);
+            else completed.run();
         }
     }
 
@@ -203,6 +238,7 @@ final class VehicleSignals implements AutoCloseable {
         private Door door;
         private Light light;
         private SeatArea lightArea;
+        private AmbientDimming ambient;
         private boolean doorSubscribed;
         private int doorEvents;
         private int brightnessEvents;
@@ -226,6 +262,7 @@ final class VehicleSignals implements AutoCloseable {
             @Override public void onBrightnessUpdated(Integer value) {
                 main.post(() -> {
                     brightnessEvents++;
+                    if (ambient != null) ambient.onBrightness(value);
                     setBrightness(value);
                 });
             }
@@ -331,7 +368,9 @@ final class VehicleSignals implements AutoCloseable {
                 light.checkAmbientLightBrightnessCapabilities((config, areas) -> {
                     if (canRead(config.getAccessType()) && !areas.isEmpty()) {
                         SeatArea area = areas.containsKey(DRIVER_SEAT) ? DRIVER_SEAT : areas.keySet().iterator().next();
-                        main.post(() -> readLight(area));
+                        AreaBounds<Integer> bounds = areas.get(area);
+                        boolean writable = config.getAccessType() == AccessType.READ_WRITE;
+                        main.post(() -> readLight(area, bounds, writable));
                     }
                     return Unit.INSTANCE;
                 }, failure -> {
@@ -343,10 +382,17 @@ final class VehicleSignals implements AutoCloseable {
             }
         }
 
-        private void readLight(SeatArea area) {
+        private void readLight(SeatArea area, AreaBounds<Integer> bounds, boolean writable) {
             if (!isCurrent()) return;
             try {
                 lightArea = area;
+                if (writable && bounds != null && bounds.getMinValue() != null && bounds.getMaxValue() != null
+                        && bounds.getMinValue() <= bounds.getMaxValue()) {
+                    ambient = new AmbientDimming(light, area, bounds.getMinValue(), bounds.getMaxValue());
+                    if (owner.resting) ambient.start();
+                } else {
+                    Log.i(TAG, "Ambient brightness control unavailable; using screen brightness only");
+                }
                 int eventsAtRead = brightnessEvents;
                 light.registerAmbientLightBrightnessListener(area, lightListener);
                 light.getAmbientLightBrightness(area, value -> {
@@ -366,6 +412,12 @@ final class VehicleSignals implements AutoCloseable {
             owner.publish();
         }
 
+        void setResting(boolean resting) {
+            if (ambient == null) return;
+            if (resting) ambient.start();
+            else ambient.stop(null);
+        }
+
         private void reconnect(String operation, Exception failure) {
             if (!isCurrent()) return;
             Log.w(TAG, operation, failure);
@@ -373,17 +425,26 @@ final class VehicleSignals implements AutoCloseable {
             owner.door = DoorState.UNKNOWN;
             owner.brightness = null;
             owner.publish();
-            close();
-            if (session == owner) main.postDelayed(owner::connectPleos, PLEOS_RETRY_MS);
+            close(() -> {
+                if (session == owner) main.postDelayed(owner::connectPleos, PLEOS_RETRY_MS);
+            });
         }
 
-        void close() {
+        void close(Runnable completed) {
             main.removeCallbacks(startReading);
             main.removeCallbacks(nextDoorRead);
             main.removeCallbacks(doorTimeout);
             if (doorSubscribed) cleanUp("unregister Pleos door", () -> door.unregisterDoorPosition(PASSENGER_DOOR, doorListener));
-            if (lightArea != null) cleanUp("unregister Pleos light", () -> light.unregisterAmbientLightBrightnessListener(lightArea, lightListener));
-            if (vehicle != null) cleanUp("release Pleos", vehicle::release);
+            releasingBindings++;
+            Runnable release = () -> {
+                if (lightArea != null) cleanUp("unregister Pleos light", () -> light.unregisterAmbientLightBrightnessListener(lightArea, lightListener));
+                if (vehicle != null) cleanUp("release Pleos", vehicle::release);
+                if (completed != null) completed.run();
+                releasingBindings--;
+                startWaiting();
+            };
+            if (ambient != null) ambient.stop(release);
+            else release.run();
         }
     }
 
