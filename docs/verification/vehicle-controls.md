@@ -116,6 +116,41 @@
     - 제품 시트 기능은 아직 없다. 자세한 내용: [seat-presets.md](seat-presets.md).
 - 증거: `app/build/reports/seat-recheck/`(`logs/f0~f10`, `docs/official-docs-summary.md`), 보고 `app/build/reports/pm-live/step13-report.md`.
 
+#### 4-1-2. STEP 21–23 원인 분리 (2026-11-13, 이동 명령·SDK 쓰기 없음)
+
+- **공식 샘플**: [pleos-sample-vehicle-app](https://github.com/Pleos-Playground/pleos-sample-vehicle-app) 커밋 `959981d960ec71144accb27af5ae5d341e72a644`.
+  - 원본은 빌드할 수 없었다. 의존성 선언 Vehicle `2.3.1`이 공식 Maven 저장소에 없다(pom 404, 공개 버전은 2.0.3·2.3.2). README에는 2.3.2로 적혀 있다.
+  - 의존성 선언 한 줄만 2.3.2로 바꾼 비교본은 빌드·설치·실행됐다. 원본 그대로는 아니며, 코드·콜백·스레드는 바꾸지 않았다.
+  - 샘플은 받은 값을 가공 없이 표시하므로, 우리 앱 어댑터를 거치지 않은 비교다.
+- **방법**:
+  - 운전석(`ROW_1_LEFT`)만 시험했다. 샘플은 capability·get·listener만 썼다(Apply 없음).
+  - 값은 Console catalog의 position fixture(0..100 %, step 1)로 넣었다. 단계마다 전체 moves 0과 actuator 0을 확인했다.
+  - 끝난 뒤 원래값 0으로 돌리고 Console 세션을 닫았다.
+- **결과**: 세 축 모두 capability는 READ_WRITE, 범위 0..100이었다.
+
+| 축 | Console 입력 | VHAL 로그(`sdv_vhal_rust`) | 서비스·샘플 get | 샘플 listener |
+| --- | --- | --- | --- | --- |
+| 등받이 | 25 | `Recline is 0.25, revised position: 0` | Int 0 | 변화 없음 |
+| 등받이 | 100 | `Recline is 1, revised position: 0.01` | Int 0 | 변화 없음 |
+| 높이 | 50 | `Height is 0.5, revised position: 0` | Int 0 | 변화 없음 |
+| 높이 | 100 | `Height is 1, revised position: 0.01` | Int 0 | 변화 없음 |
+| 기울기 | 50 | `Tilt is 0.5, revised position: 0` | Int 0 | 변화 없음 |
+| 기울기 | 100 | `Tilt is 1, revised position: 0.01` | Int 0 | 변화 없음 |
+
+- **사실과 미확인**:
+  - 사실: VHAL 로그에서 0/0.01까지 작아진 값을 관측했고, 서비스·SDK에서 Int 0을 확인했다. 우리 앱 어댑터만의 문제가 아니다.
+  - 미확인: 분수가 정수로 바뀌는 정확한 지점과 구현, 실제 차량, 다른 이미지. 앞뒤·요추 축은 시험하지 않았다.
+- **공개 진단 경로**(값 주입은 하지 않음):
+  - 개발자 옵션: 기본 설정의 빌드 번호 절차로 켜서 읽었다(`development_settings_enabled` null → 1, 직접 바꾼 설정은 이것 하나). CarData·VHAL·차량 속성 입력 메뉴가 없다.
+  - `cmd car_service help`: user 빌드라 거부된다(`SecurityException: The command 'help' requires non-user build`).
+  - VHAL `dumpsys android.hardware.automotive.vehicle.IVehicle/default --help`: 서비스는 있다. 하지만 shell → `hal_vehicle_default` binder 호출이 SELinux로 거부돼 `FAILED_TRANSACTION`이 난다.
+  - 기기 안 `Virtual console` 앱은 같은 Console(`localhost:8088`)을 띄우는 WebView다. 새 입력 경로가 아니다(정적 분석, 열지 않음).
+- **현재 한계**:
+  - 업체 답변 없이 쓸 수 있는 위치 피드백 해결 수단을 찾지 못했다.
+  - 이 결과를 SDK 전체나 모든 실제 차량이 안 된다는 뜻으로 보지 않는다.
+  - F11은 미충족이다. 위치 피드백 없이 시간으로 이동·원복을 간주하는 방식은 쓰지 않는다.
+- 증거(빌드 산출물 폴더, 커밋하지 않음): `app/build/reports/seat-independent/`(STEP 21), `seat-axes/`(STEP 22), `seat-vhal-dump/`(STEP 23)와 각 폴더의 보고서.
+
 ### 4-2. 무드등 색
 
 1. 정상 차량 설정 앱 라이트 > 무드 조명 [켜기] → SDK 스위치 ON.

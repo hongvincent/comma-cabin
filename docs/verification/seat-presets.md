@@ -8,6 +8,7 @@
 - 제품 상태: **제품의 시트 기능(프리셋 포함)은 아직 구현하지 않았다.**
   - 시트 요구사항(6-2, F11)은 유지한다.
   - 제품 화면은 지금도 시트 미지원 안내를 보여 준다.
+  - STEP 21–23 원인 분리 결과는 [vehicle-controls.md](vehicle-controls.md) 4-1-2에 있다. 1·2번 프리셋 저장은 여전히 미검증이다.
 
 ## 1. 결론
 
@@ -83,7 +84,8 @@
 - [Pleos-Playground/pleos-playground-api Discussions #36](https://github.com/Pleos-Playground/pleos-playground-api/discussions/36) (Q&A Technical, 2026-11-13 04:28 UTC 게시).
 - 주제: 에뮬레이터 2.1.0에서 가상 시트를 움직인 뒤에도 등받이 위치 getter와 listener가 0을 반환하는 현상([vehicle-controls.md](vehicle-controls.md) 4-1-1과 같은 문제).
 - 사용자 위임에 따라 PM이 게시했고, 게시 내용을 다시 읽어 확인했다. 문의 관리는 PM이 한다(중복 문의·댓글·메일 없음).
-- 2026-11-13 04:44 UTC 기준 답변·댓글이 없다. 문의는 보조 기록으로 둔다. 해결 계획은 공식 샘플·정상 설정으로 원인을 직접 분리하고 대안을 검증하는 것이다. 그때까지 제품 시트 기능(F11)은 미완료다.
+- 2026-11-13 04:44 UTC 기준 답변·댓글이 없었다. 문의는 보조 기록으로 두고, 답변을 작업 일정이나 해결의 전제로 두지 않는다.
+- 공식 샘플·정상 설정으로 원인을 직접 분리했지만(STEP 21–23, [vehicle-controls.md](vehicle-controls.md) 4-1-2) 해결 수단은 찾지 못했다. 제품 시트 기능(F11)은 미완료다.
 
 ## 7. 미확인
 
