@@ -60,6 +60,8 @@ class ControlBench(
     private val newId: () -> String = { UUID.randomUUID().toString() },
     /** Product lighting busy or holding records: no vehicle write from here (seat STOP excepted). */
     private val externalBlock: () -> String? = { null },
+    /** Another seat tool's request not settled (the debug seat preset): no seat move from here, STOP excepted. */
+    private val seatBlock: () -> String? = { null },
 ) {
     var state = ControlUiState()
         private set
@@ -759,7 +761,7 @@ class ControlBench(
         !parking().parked -> "주차(P + 주행 제한 없음)가 확인되지 않아 등받이를 움직이지 않아요"
         door() != DoorStatus.CLOSED -> "조수석 문 닫힘이 확인되지 않아 등받이를 움직이지 않아요(${door()})"
         state.pending.containsKey(ControlProp.SEAT_BACKREST) || state.stopPending != null -> "등받이에 응답을 기다리는 요청이 있어요"
-        else -> null
+        else -> seatBlock()?.let { "등받이를 움직이지 않아요: $it" }
     }
 
     private fun opposite(m: Move) = if (m == Move.BACKWARD) Move.FORWARD else Move.BACKWARD

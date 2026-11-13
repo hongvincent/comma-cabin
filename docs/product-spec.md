@@ -5,7 +5,7 @@
 - 요구사항 표기: **[확정]** 사용자·Codex·공식 공지로 정해진 것 / **[제안]** 이 문서의 제안
 - 근거 표기: **문서 확인** 공식 문서에서 읽음 / **실행 확인** 이번 작업에서 직접 실행함 / **미확인** 확인하지 못함
 - 실행 확인 표시는 단계별 검증 문서에서 실제로 확인한 항목에만 붙인다: STEP 3 앰비언트 밝기([verification/ambient-brightness.md](verification/ambient-brightness.md)), STEP 4 차량 지원 진단([verification/vehicle-support.md](verification/vehicle-support.md)), STEP 5 휴식 흐름([verification/rest-flow.md](verification/rest-flow.md)), STEP 6 휴식 소리·종료 안내([verification/rest-audio.md](verification/rest-audio.md)), STEP 7 차량 제어 쓰기·복원 debug 검증([verification/vehicle-controls.md](verification/vehicle-controls.md)), STEP 8 제품 무드등([verification/rest-lighting.md](verification/rest-lighting.md)), STEP 9 제품 공조(바람 줄이기·운전석 온도, [verification/rest-climate.md](verification/rest-climate.md)), STEP 10 실제 사용 화면 정리([verification/product-ui.md](verification/product-ui.md)), STEP 11 다음 실행의 남은 기록 현재값 조회 표시([verification/recovery-current.md](verification/recovery-current.md)). 나머지는 문서 확인 상태다.
-- 현재 구현 상태(STEP 11 기준): 휴식 흐름·휴식 소리·종료 안내(STEP 5·6)에 무드등(STEP 8)과 공조(STEP 9)의 적용·복원·복원 기록이 연결돼 있다. STEP 10에서 화면을 정리했다(시작·종료 버튼 고정, 넓은 화면 2열, 앱 이름 "쉼표 캐빈"과 직접 그린 아이콘, 시트 미지원 안내). 시트(등받이)는 요구사항으로 유지하지만 공개 위치값 불일치로 제품 자동 제어를 막아 두었다(F11). STEP 11에서 다음 실행·다시 보이는 화면에 남은 기록의 차량 설정을 쓰기 없이 읽어 원래값 옆에 보여 주는 동작(6-1·6-6, F15)을 채웠다.
+- 현재 구현 상태(STEP 15 기준): 휴식 흐름·휴식 소리·종료 안내(STEP 5·6)에 무드등(STEP 8)과 공조(STEP 9)의 적용·복원·복원 기록이 연결돼 있다. STEP 10에서 화면을 정리했다(시작·종료 버튼 고정, 넓은 화면 2열, 앱 이름 "쉼표 캐빈"과 직접 그린 아이콘, 시트 미지원 안내). STEP 11에서 다음 실행·다시 보이는 화면에 남은 기록의 차량 설정을 쓰기 없이 읽어 원래값 옆에 보여 주는 동작(6-1·6-6, F15)을 채웠다. **시트는 요구사항(6-2, F11)으로 유지하지만 제품에는 아직 구현하지 않았다**(제품 화면은 시트 미지원 안내). 등받이 공개 위치값 불일치(STEP 7·13)와 프리셋 검증 결과(STEP 14·15: 선택 요청은 VHAL까지 전달, 자세 변화 없음, 1·2번 저장 미검증)는 [verification/seat-presets.md](verification/seat-presets.md)에 있다. STEP 15의 시트 프리셋 도구는 debug 검증용이며, release에서는 개발 진단 화면에 진입할 수 없다.
 - 2~8장의 [확정]·[제안] 본문은 처음 설계 때 쓴 요구사항이다. 현재 구현과 다른 점은 3-1 표의 마지막 칸(근거·상태)과 [PM 결정 STEP n] 표기로 구분한다.
 
 ## 0. 확정 사항과 일정
@@ -37,21 +37,23 @@
 
 근거: [일정](https://appdevchallenge.auto-hmg.io/guide/schedule) · [제출 안내](https://appdevchallenge.auto-hmg.io/guide/submission) · [개발 범위 공지][notice-scope] · [유의사항 공지](https://appdevchallenge.auto-hmg.io/notice/c0a1a000-2026-4923-8000-000000000006) · [FAQ](https://appdevchallenge.auto-hmg.io/faq)
 
-### 0-3. 11.15 접수용과 12월 PT용 구분
+### 0-3. 1차 접수와 2차 PT 구분 (2026-11-13 현재)
 
 | 구분 | 범위 |
 | --- | --- |
-| 11.15 접수 | 필수는 기획서(팀원 담당). 이 저장소에서는 **그때까지 실제로 검증한 산출물이 있을 때만** 저장소·APK를 낸다. 제출 커밋은 검증 결과를 보고 추후 결정한다. 이전 프로토(`db43cda`)는 새 버전의 구현 결과로 표시하지 않는다 |
-| 12월 PT | 3장 첫 버전 요구사항(F1–F15) 전체가 에뮬레이터 release APK에서 동작하는 상태 |
+| 1차 접수(11.15) | 팀원이 이미 완료했다. 이 저장소에서 1차 서류·스토어 작업을 새로 만들지 않는다. 이전 프로토(`db43cda`)는 새 버전의 구현 결과로 표시하지 않는다 |
+| 2차 PT(12.03–12.04) | **이 작업의 목표.** Pleos Connect 에뮬레이터에서 실제로 동작하는 쉼표 캐빈. 3장 첫 버전 요구사항(F1–F15)이 에뮬레이터 release APK에서 동작하는 상태 |
+| 품질 기준 [확정] | 실제 시연 가능한 동작과 읽기 쉬운 제품 화면 |
+| 스토어 출시 | 현재 범위가 아니다 |
 
 내부 목표일 [제안, 공식 일정 아님]:
 
 | 날짜 | 목표 |
 | --- | --- |
-| 11.14 | 첫 검증 작업(9장, 조명 밝기 쓰기 순환) 결과 확보 |
-| 11.20 | 휴식 흐름(상태 확인·시간·소리·종료·다시 쉬기) 동작 |
-| 11.26 | 시트·조명·공조·음성 안내 적용과 복원 동작 |
-| 11.30 | 전체 시나리오 검증, README, release APK |
+| 11.14 | 첫 검증 작업(9장, 조명 밝기 쓰기 순환) 결과 확보 — 완료(STEP 3) |
+| 11.20 | 휴식 흐름(상태 확인·시간·소리·종료·다시 쉬기) 동작 — 완료(STEP 5) |
+| 11.26 | 내부 기능 완성: 시트·조명·공조·음성 안내 적용과 복원 동작 |
+| 11.30 | 통합 검증: 전체 시나리오, README, release APK |
 | 12.01–12.02 | 시연 리허설, 예비일 |
 
 ### 0-4. 공모전 개발 범위 규칙 [확정]

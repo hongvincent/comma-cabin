@@ -34,6 +34,9 @@ import app.commacabin.climate.ClimateUi
 import app.commacabin.control.ControlBench
 import app.commacabin.control.ControlUiState
 import app.commacabin.control.FileControlStore
+import app.commacabin.control.FilePresetStore
+import app.commacabin.control.SeatPresetBench
+import app.commacabin.control.SeatPresetUi
 import app.commacabin.lighting.LightingUi
 import app.commacabin.probe.AmbientProbe
 import app.commacabin.probe.Cancellable
@@ -74,6 +77,9 @@ class MainActivity : ComponentActivity() {
     private val supportTab = mutableStateOf(false)
     private val controlTab = mutableStateOf(false)
     private val controlState = mutableStateOf(ControlUiState())
+    /** Debug-only seat preset check tab. */
+    private val presetTab = mutableStateOf(false)
+    private val presetState = mutableStateOf(SeatPresetUi())
     private val ttsState = mutableStateOf(TtsUiState())
     private lateinit var restState: MutableState<RestState>
     private val audioState = mutableStateOf(AudioUi())
@@ -97,6 +103,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var rest: RestFlow
     private lateinit var audio: RestAudio
     private lateinit var bench: ControlBench
+    private lateinit var presetBench: SeatPresetBench
     private lateinit var probe: AmbientProbe
     private lateinit var support: SupportDiagnostics
     private lateinit var tts: TtsDiagnostics
@@ -107,6 +114,8 @@ class MainActivity : ComponentActivity() {
     private var started = false
     /** The [ControlScreen] composable is in the composition (dev tools open, control tab selected, not resting). */
     private var controlShown = false
+    /** The debug seat preset tab is in the composition. */
+    private var presetShown = false
 
     private val scheduler = object : Scheduler {
         override fun schedule(delayMs: Long, task: () -> Unit): Cancellable {
@@ -165,6 +174,7 @@ class MainActivity : ComponentActivity() {
             },
             audio = audio,
             log = { line -> Log.i(REST_TAG, line) },
+            startBlock = { presetSeatBusy() },
         )
         rest.listenTo(audio)
         restState = mutableStateOf(rest.state)
@@ -210,11 +220,24 @@ class MainActivity : ComponentActivity() {
             lease = CONTROL_LEASE,
             log = { line -> Log.i(CONTROL_TAG, line) },
             externalBlock = { cabin.productBusy() },
+            seatBlock = { presetSeatBusy() },
         )
         bench.onState = {
             controlState.value = it
             cabin.debugChanged()
         }
+        presetBench = SeatPresetBench(
+            port = app.commacabin.sdk.PleosSeatPresetPort(vehicle, main),
+            store = FilePresetStore(File(filesDir, FilePresetStore.FILE_NAME)),
+            parking = { parking.state },
+            door = { door.state.status },
+            clock = System::currentTimeMillis,
+            log = { line -> Log.i(PRESET_TAG, line) },
+            // Not part of debugBusy: that one also holds the product restore, which a preset must never block.
+            externalBlock = { if (rest.state.screen == Screen.RESTING) "휴식 중에는 요청하지 않아요" else debugBusyReason() ?: cabin.productBusy() },
+        )
+        presetBench.onState = { presetState.value = it }
+        presetBench.start()
         support = SupportDiagnostics(readPort, scheduler, System::currentTimeMillis) { line -> Log.i(SUPPORT_TAG, line) }
         support.onState = { supportState.value = it }
         tts = TtsDiagnostics({ PleosTtsEngine(applicationContext, main) }, scheduler, ttsSlot, AndroidAudioFocus(this, main)) { line -> Log.i(TTS_TAG, line) }
@@ -279,20 +302,39 @@ class MainActivity : ComponentActivity() {
         Column {
             Row(Modifier.padding(start = 24.dp, top = 16.dp), horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 TabButton("← 휴식 화면", selected = false) { devToolsOpen.value = false }
-                TabButton("밝기 검증", selected = !supportTab.value && !controlTab.value) {
+                TabButton("밝기 검증", selected = !supportTab.value && !controlTab.value && !presetTab.value) {
                     supportTab.value = false
                     controlTab.value = false
+                    presetTab.value = false
                 }
                 TabButton("지원 진단(읽기 전용)", selected = supportTab.value) {
                     supportTab.value = true
                     controlTab.value = false
+                    presetTab.value = false
                 }
                 TabButton("제어 검증", selected = controlTab.value) {
                     controlTab.value = true
                     supportTab.value = false
+                    presetTab.value = false
+                }
+                TabButton("시트 프리셋(검증)", selected = presetTab.value) {
+                    presetTab.value = true
+                    controlTab.value = false
+                    supportTab.value = false
                 }
             }
-            if (controlTab.value) {
+            if (presetTab.value) {
+                // Like the control tab: new requests only while this composable is shown and the Activity started.
+                DisposableEffect(Unit) {
+                    presetShown = true
+                    syncControlVisibility()
+                    onDispose {
+                        presetShown = false
+                        syncControlVisibility()
+                    }
+                }
+                SeatPresetScreen(presetState.value, presetBench)
+            } else if (controlTab.value) {
                 // Leaving by another tab, [← 휴식 화면], Back or a rest start removes this composable.
                 DisposableEffect(Unit) {
                     controlShown = true
@@ -340,6 +382,7 @@ class MainActivity : ComponentActivity() {
     /** The bench takes new work only while its screen is really visible: Activity started and the control tab shown. */
     private fun syncControlVisibility() {
         if (started && controlShown) bench.onVisible() else bench.onHidden()
+        if (started && presetShown) presetBench.onVisible() else presetBench.onHidden()
     }
 
     /**
@@ -387,6 +430,9 @@ class MainActivity : ComponentActivity() {
     }
 
     /** Debug tools busy or holding records (also damaged): the product lighting does not apply meanwhile. */
+    /** The debug seat preset holds a request the operator has not confirmed: no other seat move and no rest start. */
+    private fun presetSeatBusy(): String? = if (::presetBench.isInitialized) presetBench.busyReason() else null
+
     private fun debugBusyReason(): String? {
         if (!::probe.isInitialized || !::bench.isInitialized) return null
         val p = probe.state
@@ -410,6 +456,7 @@ class MainActivity : ComponentActivity() {
         restoreWindow()
         audio.stopAll()
         bench.close()
+        presetBench.close()
         support.close()
         tts.close()
         probe.close()
@@ -426,6 +473,7 @@ class MainActivity : ComponentActivity() {
         const val DOOR_TAG = "RestDoor"
         const val AUDIO_TAG = "RestAudio"
         const val CONTROL_TAG = "ControlBench"
+        const val PRESET_TAG = "SeatPresetBench"
         const val FIRST_READ_DELAY_MS = 1_500L
         const val DIM_WINDOW_BRIGHTNESS = 0.02f
         /** Only [RestSettings] (onboarding version, sound choice and level) are stored here. */

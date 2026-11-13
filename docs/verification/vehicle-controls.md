@@ -110,6 +110,10 @@
     - 프리셋 선택·저장·이동은 호출하지 않았다. 차량 쓰기는 0건이다.
     - 공개 SDK 타입에는 프리셋 저장 메서드와 현재 프리셋 번호 조회가 보이지 않는다(접근도 WRITE뿐이다).
   - 선택 결과 확인, 저장, 원래 자세로 되돌리는 계약은 아직 확인하지 않았다. 이 경로가 구현 불가하다고 정하지 않는다.
+  - (위 STEP 14 내용은 당시 결과로 그대로 둔다.) **STEP 15(2026-11-13) 최신 결과**:
+    - debug 도구로 `selectSeatMemory` 2번·1번을 1회씩 호출했다. 요청은 SDK → 서비스 → VHAL까지 전달됐지만 시트는 어느 영역·축도 움직이지 않았다.
+    - 차량 설정 앱의 저장 카드는 떴지만 대상이 "운전석 0"이었다. 1·2번 저장과 프리셋 이동은 미검증이다.
+    - 제품 시트 기능은 아직 없다. 자세한 내용: [seat-presets.md](seat-presets.md).
 - 증거: `app/build/reports/seat-recheck/`(`logs/f0~f10`, `docs/official-docs-summary.md`), 보고 `app/build/reports/pm-live/step13-report.md`.
 
 ### 4-2. 무드등 색

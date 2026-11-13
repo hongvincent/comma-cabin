@@ -63,6 +63,7 @@ class RestFlowTest {
     private val saved = mutableListOf<RestSettings>()
     private val audio = FakeAudio()
     private val log = mutableListOf<String>()
+    private var startBlock: String? = null
 
     private val flow by lazy {
         RestFlow(
@@ -76,6 +77,7 @@ class RestFlowTest {
             saveSettings = { saved += it },
             audio = audio,
             log = { log += it },
+            startBlock = { startBlock },
         ).also { it.onVisible() }
     }
 
@@ -361,6 +363,19 @@ class RestFlowTest {
 
         assertEquals(Screen.ENDED, state.screen)
         assertEquals(EndReason.APP_LEFT, state.ending!!.reason)
+    }
+
+    @Test
+    fun `an unsettled debug seat request keeps the ready screen and asks nothing of the audio side`() {
+        startBlock = "시트 프리셋 요청이 운영자 확인 전이에요"
+        flow.start()
+        assertEquals(Screen.READY, state.screen)
+        assertEquals("시작하지 않았어요. 시트 프리셋 요청이 운영자 확인 전이에요", state.notice)
+        assertTrue(audio.calls.isEmpty())
+
+        startBlock = null
+        flow.start()
+        assertEquals(Screen.RESTING, state.screen)
     }
 
     @Test

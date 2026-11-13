@@ -365,6 +365,18 @@ class ControlBenchTest {
     }
 
     @Test
+    fun `an unsettled seat preset request holds every seat move here, but never the STOP`() {
+        val held = ControlBench(port, store, scheduler, { parking }, { door }, { false }, { scheduler.now }, RecordLease(), seatBlock = { "preset" })
+            .also { it.start(); it.onVisible() }
+        held.exploreSeat(Move.BACKWARD)
+        assertTrue(port.moves.isEmpty())
+        assertTrue(store.records.isEmpty())
+
+        held.stopSeat("test")
+        assertEquals(listOf("STOP"), port.moves.map { it.what })
+    }
+
+    @Test
     fun `seat restore goes the other way, stops on reaching the original and deletes the record on a confirmed read`() {
         bench.exploreSeat(Move.BACKWARD)
         port.values[ControlProp.SEAT_BACKREST to DRIVER] = "4"

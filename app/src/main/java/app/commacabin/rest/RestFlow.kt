@@ -120,6 +120,8 @@ class RestFlow(
     private val saveSettings: (RestSettings) -> Unit,
     private val audio: RestAudioPort,
     private val log: (String) -> Unit = {},
+    /** A debug seat tool's request not settled: no rest starts meanwhile. */
+    private val startBlock: () -> String? = { null },
 ) {
     var state: RestState
         private set
@@ -172,6 +174,11 @@ class RestFlow(
     fun start() {
         if (state.screen != Screen.READY) return
         val now = wallClock()
+        startBlock()?.let { reason ->
+            log("start refused: $reason")
+            update { copy(nowMs = now, notice = "시작하지 않았어요. $reason") }
+            return
+        }
         val p = parking()
         val d = door()
         val restMs = RestTime.restMs(state.pickupMs, now)
