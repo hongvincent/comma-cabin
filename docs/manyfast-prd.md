@@ -6,9 +6,9 @@
 
 ## 문제와 제품 범위
 
-픽업 장소에 일찍 도착한 운전자는 차 안에서 잠시 쉴 수 있습니다. 약속 시각을 확인해야 하고, 상대가 먼저 와 문을 열면 인사하기 전에 재생을 끄기도 합니다. 주 2회 이상 학원 픽업을 하며 주차장에서 혼자 5분 이상 기다리는 국내 Pleos 차량 운전자를 먼저 대상으로 잡았습니다. 반복 픽업에서는 같은 상황을 여러 번 관찰할 수 있습니다. [현대자동차그룹의 Pleos 앱 마켓 적용 차종 안내](https://www.hyundaimotorgroup.com/ko/news/42dot-pleos-connect-app-market-new-apps)
+픽업 장소에 일찍 도착한 운전자는 차 안에서 잠시 쉴 수 있습니다. 약속 시각을 확인해야 하고, 상대가 먼저 와 문을 열면 인사하기 전에 재생을 끄기도 합니다. 주 2회 이상 학원 픽업을 하며 주차장에서 혼자 5분 이상 기다리는 국내 Pleos 차량 운전자를 먼저 대상으로 잡았습니다. 반복 픽업에서는 같은 상황을 여러 번 관찰할 수 있습니다. 국내 Pleos 앱 마켓 적용 차종에는 더 뉴 그랜저와 디 올 뉴 아반떼가 있습니다. [현대자동차그룹의 Pleos 앱 마켓 적용 차종 안내](https://www.hyundaimotorgroup.com/ko/news/42dot-pleos-connect-app-market-new-apps)
 
-기존 차량 휴식 기능으로는 NIO Tide Nap과 메르세데스 벤츠 EQS Power Nap이 있습니다. Dodge Radio Off With Door는 차량 전원이 꺼진 상태에서 문이 열리면 라디오 전원을 끄는 설정입니다. 쉼표 캐빈은 운전자가 주차 중 직접 시작한 휴식을 **약속 시각과 오른쪽 앞문 상태**에 연결합니다. 평소 음악·알람·운전대 음소거를 쓰는 방식과 비교해, 동승자에게 인사할 때까지 필요한 추가 조작이 줄어드는지 확인합니다. [NIO EL7 사용자 설명서](https://www.nio.com/cdn-static/www/user-instructions/en_EU/EL7/index.html) · [메르세데스 벤츠 EQS 안내](https://media.mercedes-benz.com/article/d7b935fa-d988-4336-aef1-f4a1a2ada9b7) · [Dodge Charger 사용자 설명서](https://vehicleinfo.mopar.com/assets/publications/en-us/Dodge/2025/Charger/104017_45_LB_OM_EN_USC_DIGITAL_E2_V3.pdf)
+기존 차량 휴식 기능으로는 NIO Tide Nap과 메르세데스 벤츠 EQS Power Nap이 있습니다. Dodge Radio Off With Door를 활성화하면 차량 전원이 꺼진 뒤 앞문이 열리거나 설정한 지연 시간이 지나면 라디오가 꺼집니다. 쉼표 캐빈은 운전자가 주차 중 직접 시작한 휴식을 **약속 시각과 오른쪽 앞문 상태**에 연결합니다. 평소 음악·알람·운전대 음소거를 쓰는 방식과 비교해, 동승자에게 인사할 때까지 필요한 추가 조작이 줄어드는지 확인합니다. [NIO EL7 사용자 설명서](https://www.nio.com/cdn-static/www/user-instructions/en_EU/EL7/index.html) · [메르세데스 벤츠 EQS 안내](https://media.mercedes-benz.com/article/d7b935fa-d988-4336-aef1-f4a1a2ada9b7) · [Dodge Charger 사용자 설명서](https://vehicleinfo.mopar.com/assets/publications/en-us/Dodge/2025/Charger/104824_25_LB_OM_EN_USC_DIGITAL_E2_V4.pdf)
 
 | 기본 속성 | 범위 |
 | --- | --- |
