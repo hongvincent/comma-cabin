@@ -78,7 +78,14 @@
   - `app/build/reports/seat-memory-support/`(STEP 14)
   - 보고: `app/build/reports/pm-live/step14-report.md`, `step15-report.md`
 
-## 6. 미확인
+## 6. 공식 기술 문의
+
+- [Pleos-Playground/pleos-playground-api Discussions #36](https://github.com/Pleos-Playground/pleos-playground-api/discussions/36) (Q&A Technical, 2026-11-13 04:28 UTC 게시).
+- 주제: 에뮬레이터 2.1.0에서 가상 시트를 움직인 뒤에도 등받이 위치 getter와 listener가 0을 반환하는 현상([vehicle-controls.md](vehicle-controls.md) 4-1-1과 같은 문제).
+- 사용자 위임에 따라 PM이 게시했고, 게시 내용을 다시 읽어 확인했다. 문의 관리는 PM이 한다(중복 문의·댓글·메일 없음).
+- 2026-11-13 04:44 UTC 기준 답변·댓글이 없다. 문의는 보조 기록으로 둔다. 해결 계획은 공식 샘플·정상 설정으로 원인을 직접 분리하고 대안을 검증하는 것이다. 그때까지 제품 시트 기능(F11)은 미완료다.
+
+## 7. 미확인
 
 1. 1·2번 프리셋 저장과, 저장 뒤 `selectSeatMemory`로 시트가 움직이고 돌아오는지
 2. 프리셋 이동 중 STOP의 효과
