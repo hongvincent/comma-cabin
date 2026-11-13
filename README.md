@@ -2,13 +2,14 @@
 
 현대자동차그룹 차량용 앱 개발 공모전을 위한 Android 프로젝트입니다. 주차한 차 안에서 잠깐 조용히 쉬도록 돕는 앱이고, Pleos Connect 에뮬레이터에서 개발·시험하고 있습니다. 목표는 2차 PT(2026-12-03~04)에서 에뮬레이터로 실제 동작하는 앱이며, 스토어 출시용 빌드가 아닙니다. `jeonyul` 브랜치에서 개발합니다.
 
-요구사항과 현재 상태는 [docs/product-spec.md](docs/product-spec.md)에, 단계별 실제 검증 결과는 [docs/verification/](docs/verification/)에, 2차 PT 시연 절차는 [docs/pt-demo.md](docs/pt-demo.md)에 있습니다.
+요구사항과 현재 상태는 [docs/product-spec.md](docs/product-spec.md)에, 단계별 실제 검증 결과는 [docs/verification/](docs/verification/)에, 2차 PT 시연 절차는 [docs/pt-demo.md](docs/pt-demo.md)에 있습니다. 최신 내부 QA 빌드는 release `0.2.2`(versionCode 4)이고, 설치 방법과 해시는 [docs/pt-demo.md](docs/pt-demo.md) 1절에 있습니다.
 
 ## 현재 구현된 기능
 
 - **첫 실행 안내**: 무엇이 바뀌고 언제 끝나는지 먼저 알려 줍니다. 안내 문구가 바뀌면 한 번 다시 보여 줍니다.
 - **휴식 준비**:
   - 픽업 시각을 ±5분으로 고르면, 그 2분 전에 휴식이 끝납니다.
+  - 픽업 시각이 지났거나 쉴 시간이 3분보다 짧으면 [지금 기준으로 다시 설정]이 보입니다. 누르면 지금부터 20분 뒤를 5분 단위로 올린 시각으로 바뀝니다. 누를 때만 바뀌고, 아직 쓸 수 있는 픽업 시각을 앱이 스스로 미루지 않습니다.
   - 시작 조건은 세 가지입니다: P이고 주행 제한이 없을 것, 조수석 문이 닫혀 있을 것, 쉴 시간이 3분 이상일 것.
   - [쉬기 시작]은 화면 아래에 늘 보이고, 막혀 있으면 그 이유를 같은 자리에 보여 줍니다.
 - **휴식 중**:
@@ -27,7 +28,7 @@
   - 기록이 남아 있으면 화면이 보일 때 차량 설정을 한 번 읽어(쓰기 없음) 원래값 옆에 "확인한 설정"으로 보여 줍니다. [다시 확인]으로 다시 읽을 수 있습니다. 읽은 값은 그 순간의 값이고, [원래대로]는 누를 때 다시 확인한 뒤 되돌립니다.
   - 차량의 응답을 받지 못한 요청이 있는 기록은 앱에서 되돌리거나 지울 수 없습니다. 차량에서 직접 맞춰야 합니다.
   - [기록 지우기]는 기록만 지웁니다. 차량 설정을 원래대로 돌리지는 않습니다.
-- **시트(편한 자세)**: 요구사항이지만 **아직 지원하지 않습니다**. 앱은 시트를 움직이지 않고, "차량에서 직접 편한 자세를 맞춰 주세요"라고만 안내합니다. 에뮬레이터에서 공개 SDK의 등받이 위치값이 실제 이동을 따라오지 않아, 이동량과 원복을 확인할 수 없었습니다([docs/verification/vehicle-controls.md](docs/verification/vehicle-controls.md)). 공식 지원 포럼 기술 문의([#36](https://github.com/Pleos-Playground/pleos-playground-api/discussions/36))는 진행 중이고, 해결은 원인을 직접 분리하고 대안을 검증하는 방식으로 진행합니다.
+- **시트(편한 자세)**: 요구사항이지만 **아직 지원하지 않습니다**. 새 휴식에서는 시트를 조회하거나 움직이지 않고, "차량에서 직접 편한 자세를 맞춰 주세요"라고 안내합니다. 다만 0.2.1(STEP 34)부터 이전 실행의 시트 기록이 남아 있으면 앱이 시작할 때 처리합니다. 읽을 수 있고 지원하는 등받이 축의 미완료 기록에는 안전 STOP을 한 번 보냅니다. 손상됐거나 지원하지 않는 축의 기록에는 STOP을 보내지 않습니다. 어느 경우든 기록은 지우지 않고 "차량에서 시트 자세를 직접 확인해 주세요"라는 안내를 보여 줍니다([docs/verification/vehicle-controls.md](docs/verification/vehicle-controls.md) 4-1-9). 에뮬레이터에서 공개 SDK의 등받이 위치값이 실제 이동을 따라오지 않아, 이동량과 원복을 확인할 수 없었습니다([docs/verification/vehicle-controls.md](docs/verification/vehicle-controls.md)). 공식 지원 포럼 기술 문의([#36](https://github.com/Pleos-Playground/pleos-playground-api/discussions/36))는 진행 중이고, 해결은 원인을 직접 분리하고 대안을 검증하는 방식으로 진행합니다.
 
 차량 연동은 공개 Pleos Vehicle SDK만 씁니다. 항목마다 지원 여부·범위를 먼저 확인하고, 지원하지 않거나 확인할 수 없으면 쓰지 않습니다. 차량 SDK의 지원 조회, 값 조회·변경, 리스너 등록·해제 호출은 main 스레드가 아니라 작업 스레드 하나에서 차례대로 실행합니다([docs/verification/sdk-dispatch.md](docs/verification/sdk-dispatch.md)).
 
@@ -71,7 +72,13 @@ debug 빌드에만 검증용 [개발 진단] 화면이 있습니다. release 빌
 - 휴식 흐름, 휴식 소리와 종료 안내(로그·포커스·음성 콜백 기준)
 - 무드등·공조 적용과 복원
 - 강제 종료 뒤 남은 기록(F15): 기록 보존, 남은 기록 카드의 차량 설정 확인(쓰기 없음), [기록 지우기] 확인창의 취소, [원래대로] 복원([docs/verification/product-ui.md](docs/verification/product-ui.md) 11절)
-- 최신 release(0.2.0) 실행([docs/verification/product-ui.md](docs/verification/product-ui.md) 12절):
+- 최신 release 0.2.2(같은 QA APK, 소스 `55c2a37`):
+  - 단위 테스트 414개 통과(실패·오류·건너뜀 0), lint 오류 0(기존 경고 5), debug·release 빌드 성공(STEP 35).
+  - [지금 기준으로 다시 설정]과 자연 시간 종료, 종료 직후 [다시 쉬기]: 이 시험에서는 무드등·공조가 꺼져 있어 차량 값은 바꾸지 않았다([docs/verification/product-ui.md](docs/verification/product-ui.md) 13절).
+  - 무드등 밝기·색, 풍량, 운전석 온도 4항목 적용 → 실제 다른 앱(내비게이션) 전환으로 앱 이탈(APP_LEFT) → 4항목 모두 원래 값으로 복원(같은 문서 14절).
+  - 무드등 밝기·색, 풍량, 운전석 온도 4항목 적용 → 자연 시간 종료와 4항목 모두 원래 값으로 복원 확인. 종료 안내음, 기기 안 음성 완료 콜백, 오디오 포커스 정리도 확인했다(같은 문서 15절, STEP 38). 에뮬레이터 결과이고 실차가 아니다.
+- 0.2.1(STEP 34): 이전 실행의 미완료 등받이 시트 기록에 대한 시작 때 안전 STOP, 기록 보존, 준비·종료 화면 안내. 복제한 에뮬레이터에 QA가 직접 심은 기록으로 확인했고, 실제 시트 이동 실험은 아니다([docs/verification/vehicle-controls.md](docs/verification/vehicle-controls.md) 4-1-9).
+- 지난 release 0.2.0(STEP 19, 당시 기록, [docs/verification/product-ui.md](docs/verification/product-ui.md) 12절):
   - 자연 시간 종료: 종료 안내음, 기기 안 음성의 완료 콜백, 공조 복원까지 확인했다. 이 시험에서는 무드등이 꺼져 있어 공조만 바뀌었다.
   - 실제 다른 앱 전환으로 앱 이탈(APP_LEFT)이 일어났고, 무드등·공조 4항목이 원래대로 돌아왔다.
   - 첫 시간 종료 시도는 조수석 문 신호 공백으로 안전 중단돼 실패로 기록했다.
@@ -79,7 +86,7 @@ debug 빌드에만 검증용 [개발 진단] 화면이 있습니다. release 빌
 
 **아직 확인하지 않았거나 한계가 있는 것**:
 
-- 시트 자동 조절: 미구현이며, 요구사항은 아직 충족하지 못했습니다(공식 문의 [#36](https://github.com/Pleos-Playground/pleos-playground-api/discussions/36) 진행 중, 해결 계획은 직접 원인 분리와 대안 검증).
+- 시트 자동 조절: 새 휴식에서 시트를 움직이지 않으며, 요구사항은 아직 충족하지 못했습니다(F11, 공식 문의 [#36](https://github.com/Pleos-Playground/pleos-playground-api/discussions/36) 진행 중, 해결 계획은 직접 원인 분리와 대안 검증).
 - 에뮬레이터 차량 값은 Virtual Console 세션이 열려 있을 때만 바뀌었습니다. 세션이 없을 때는 Native 공조 전원 요청도 실패했습니다.
 - 실제 차량에서의 동작.
 - 실제 스피커로 듣는 확인: 에뮬레이터 오디오 출력으로는 소리를 들을 수 없어, 재생과 포커스를 로그로만 확인했습니다.
