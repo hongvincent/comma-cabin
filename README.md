@@ -4,6 +4,16 @@
 
 [서명된 APK 받기](https://github.com/hongvincent/comma-cabin/releases/tag/v0.2.0) · [설치와 실행](#설치와-실행) · [에뮬레이터 검증 기록](docs/verification.md)
 
+## 숏폼과 제품 기획
+
+<a href="docs/media/shortform.mp4?raw=true"><img src="docs/media/shortform-cover.jpg" width="216" alt="빗방울 맺힌 차 안에서 조수석 문이 열리고 쉼표 캐빈이 휴식을 끝내는 숏폼 장면"></a>
+
+| 자료 | 볼 수 있는 내용 |
+| --- | --- |
+| [쉼표 캐빈 숏폼 · MP4](docs/media/shortform.mp4?raw=true) | 비 오는 저녁, 주차한 차 안에서 잠깐 쉬는 장면을 담았습니다. **00:19.25**에 조수석 문이 벌어지며 빗소리가 멎고 화면이 바뀝니다. 세로 1080 × 1920, 30초. |
+| [Manyfast PRD](docs/manyfast-prd.md) | 제품이 해결하는 문제와 초기 사용자, 요구사항, 검증 기준, 후속 계획을 정리했습니다. |
+| [Pleos 검증 기록](docs/verification.md) | 픽업 2분 전 종료와 조수석 문 열림 종료의 에뮬레이터 실측과 재현 방법을 볼 수 있습니다. |
+
 ## Pleos에서 확인한 화면
 
 **휴식 시작 전** · P 기어와 조수석 문 닫힘을 확인하면 시작할 수 있습니다. 픽업 시각과 휴식 종료 시각이 함께 표시됩니다.
