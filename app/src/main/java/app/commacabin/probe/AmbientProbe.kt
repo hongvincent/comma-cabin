@@ -343,7 +343,7 @@ class AmbientProbe(
             return reject("복원 기록을 저장하지 못해 차량에 쓰지 않았어요")
         }
         note("기록 저장", describe(record))
-        send(record, RequestKind.APPLY, target)
+        send(record, RequestKind.APPLY, target, previous = null)
     }
 
     private fun continueRestore(jobId: String, outcome: ReadOutcome<BrightnessCapability>) {
@@ -373,29 +373,69 @@ class AmbientProbe(
         val next = record.copy(jobId = newJobId(), stage = Stage.RESTORE_REQUESTED, responseReceived = false, lastCallbackValue = null)
         if (!saveRecord(next, "원복 요청 기록 저장")) return reject("복원 기록을 갱신하지 못해 차량에 쓰지 않았어요")
         note("기록 갱신", describe(next))
-        send(next, RequestKind.RESTORE, record.originalValue)
+        send(next, RequestKind.RESTORE, record.originalValue, previous = record)
     }
 
-    private fun send(record: RecoveryRecord, kind: RequestKind, value: Int) {
+    /**
+     * [record] is saved; the write waits in the SDK lane (busy meanwhile). Right before the SDK entry the record,
+     * parking, product lighting and storage are checked again on main; the timeout starts then. Not sent: the record
+     * goes back to [previous] (none: deleted), only while it is still this job and this probe is alive.
+     */
+    private fun send(record: RecoveryRecord, kind: RequestKind, value: Int, previous: RecoveryRecord?) {
         val jobId = record.jobId
-        update {
-            copy(
-                record = record,
-                pending = PendingRequest(jobId, kind, clock()),
-                busy = false,
-                lastCallback = null,
-                message = "${kind.label} 요청을 보냈어요. 응답을 기다려요",
-            )
-        }
-        refreshGuide()
-        writeTimeout = scheduler.schedule(RESPONSE_TIMEOUT_MS) { onWriteTimeout(jobId) }
-        note("${kind.label} 요청", "작업 ${short(jobId)}: setAmbientLightBrightness(${record.area}, $value)")
+        update { copy(record = record, busy = true, message = "${kind.label} 요청 차례를 기다려요") }
+        val dispatch = Dispatch(
+            gate = {
+                when {
+                    !alive -> "화면이 닫혔어요"
+                    state.record?.jobId != jobId -> "기록이 바뀌었어요"
+                    !parking().parked -> "주차 조건이 사라졌어요"
+                    state.storageFault != null -> "기록 저장 오류가 있어요"
+                    else -> externalBlock()?.let { "제품 휴식 무드등 작업이 있어요: $it" }
+                }
+            },
+            onStart = {
+                update {
+                    copy(
+                        pending = PendingRequest(jobId, kind, clock()),
+                        busy = false,
+                        lastCallback = null,
+                        message = "${kind.label} 요청을 보냈어요. 응답을 기다려요",
+                    )
+                }
+                refreshGuide()
+                writeTimeout = scheduler.schedule(RESPONSE_TIMEOUT_MS) { onWriteTimeout(jobId) }
+                note("${kind.label} 요청", "작업 ${short(jobId)}: setAmbientLightBrightness(${record.area}, $value)")
+            },
+            onNotSent = { why -> onNotSent(jobId, kind, previous, why) },
+        )
         light.setBrightness(
             AreaId(record.area),
             value,
+            dispatch,
             onComplete = { v -> onWriteResponse(jobId, Response.Completed(v)) },
             onError = { e -> onWriteResponse(jobId, Response.Failed(e)) },
         )
+    }
+
+    /**
+     * Certainly not sent: the record goes back, also after close (the file only; a closed probe shows nothing) while
+     * no newer probe holds the file. A superseded probe leaves the file as saved.
+     */
+    private fun onNotSent(jobId: String, kind: RequestKind, previous: RecoveryRecord?, why: String) {
+        if (!lease.isHeld(leaseId)) return
+        if (state.pending?.jobId == jobId) {
+            writeTimeout?.cancel()
+            writeTimeout = null
+            update { copy(pending = null) }
+        }
+        if (state.record?.jobId == jobId) {
+            val back = if (previous == null) deleteRecord("미전송 기록 삭제") else saveRecord(previous, "미전송 기록 되돌림")
+            if (back) update { copy(record = previous) }
+        }
+        update { copy(busy = false) }
+        refreshGuide()
+        reject("${kind.label} 요청을 보내지 않았어요($why)")
     }
 
     private fun onWriteTimeout(jobId: String) {
@@ -474,7 +514,9 @@ class AmbientProbe(
     private fun observe(area: AreaId, jobId: String) {
         stopObserving()
         val generation = observerGeneration
-        observer = light.observeBrightness(area) { v -> onObserved(generation, jobId, v) }
+        observer = light.observeBrightness(area, { e ->
+            if (e != null && alive && generation == observerGeneration) note("밝기 알림 등록 실패 또는 오류", e.text())
+        }) { v -> onObserved(generation, jobId, v) }
     }
 
     private fun stopObserving() {

@@ -30,6 +30,9 @@ data class CapabilityResult(val access: Access, val areas: List<AreaBound>, val 
 interface VehicleReadPort {
     fun capability(feature: Feature, ok: (CapabilityResult) -> Unit, err: (ProbeError) -> Unit)
     fun current(feature: Feature, area: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit)
-    /** Returns null when this diagnostic does not subscribe to [feature]. */
+    /**
+     * Returns null when this diagnostic does not subscribe to [feature]. The handle is no proof of a registration:
+     * a registration that did not happen reaches [onError] (on main), like a listener error.
+     */
     fun observe(feature: Feature, area: String, onUpdate: (String?) -> Unit, onError: (ProbeError) -> Unit): AutoCloseable?
 }

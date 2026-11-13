@@ -6,18 +6,21 @@ import ai.pleos.playground.vehicle.api.model.capability.AccessType
 import ai.pleos.playground.vehicle.constant.area.SeatValue
 import ai.pleos.playground.vehicle.constant.control.LightSwitch
 import ai.pleos.playground.vehicle.listener.AmbientLightBrightnessListener
-import android.os.Handler
 import app.commacabin.probe.Access
 import app.commacabin.probe.AreaId
 import app.commacabin.probe.BrightnessCapability
+import app.commacabin.probe.Dispatch
 import app.commacabin.probe.LightPort
 import app.commacabin.probe.ProbeError
 import app.commacabin.probe.SwitchState
 
-/** Pleos Vehicle SDK ambient-brightness calls. Callbacks are re-posted to [main]. */
-class PleosLightPort(private val light: Light, private val main: Handler) : LightPort {
+/**
+ * Pleos Vehicle SDK ambient-brightness calls, all entered on [lane]'s worker (never on main). Callbacks are posted
+ * to the main thread. [owner] is the lane owner whose tasks [SdkLane.close] cancels.
+ */
+class PleosLightPort(private val light: Light, private val lane: SdkLane, private val owner: Any) : LightPort {
     override fun checkBrightnessCapabilities(onResult: (BrightnessCapability) -> Unit, onError: (ProbeError) -> Unit) {
-        call(onError) {
+        lane.readCall(owner, "capability ambient brightness", onError) {
             light.checkAmbientLightBrightnessCapabilities(
                 { config, areas ->
                     val bounds = areas.mapNotNull { (area, b) ->
@@ -25,65 +28,59 @@ class PleosLightPort(private val light: Light, private val main: Handler) : Ligh
                         val max = b.maxValue
                         if (min > max) null else areaId(area) to (min..max)
                     }.toMap()
-                    main.post { onResult(BrightnessCapability(config.accessType.toAccess(), bounds)) }
+                    lane.post { onResult(BrightnessCapability(config.accessType.toAccess(), bounds)) }
                 },
-                { e -> main.post { onError(e.toProbeError()) } },
+                { e -> lane.post { onError(e.toProbeError()) } },
             )
         }
     }
 
     override fun getSwitch(area: AreaId, onResult: (SwitchState?) -> Unit, onError: (ProbeError) -> Unit) {
-        call(onError) {
+        lane.readCall(owner, "read ambient switch", onError) {
             light.getAmbientLightSwitch(
                 seatArea(area),
-                { value -> main.post { onResult(value?.toSwitchState()) } },
-                { e -> main.post { onError(e.toProbeError()) } },
+                { value -> lane.post { onResult(value?.toSwitchState()) } },
+                { e -> lane.post { onError(e.toProbeError()) } },
             )
         }
     }
 
     override fun getBrightness(area: AreaId, onResult: (Int?) -> Unit, onError: (ProbeError) -> Unit) {
-        call(onError) {
+        lane.readCall(owner, "read ambient brightness", onError) {
             light.getAmbientLightBrightness(
                 seatArea(area),
-                { value -> main.post { onResult(value) } },
-                { e -> main.post { onError(e.toProbeError()) } },
+                { value -> lane.post { onResult(value) } },
+                { e -> lane.post { onError(e.toProbeError()) } },
             )
         }
     }
 
-    override fun setBrightness(area: AreaId, value: Int, onComplete: (Int?) -> Unit, onError: (ProbeError) -> Unit) {
-        call(onError) {
+    override fun setBrightness(area: AreaId, value: Int, dispatch: Dispatch, onComplete: (Int?) -> Unit, onError: (ProbeError) -> Unit) {
+        lane.writeCall(owner, "write ambient brightness $value", dispatch, onError) {
             light.setAmbientLightBrightness(
                 seatArea(area),
                 value,
-                { _, returned -> main.post { onComplete(returned) } },
-                { e -> main.post { onError(e.toProbeError()) } },
+                { _, returned -> lane.post { onComplete(returned) } },
+                { e -> lane.post { onError(e.toProbeError()) } },
             )
         }
     }
 
-    override fun observeBrightness(area: AreaId, onUpdate: (Int?) -> Unit): AutoCloseable {
+    /** Registered and removed on the lane; the handle returns at once. */
+    override fun observeBrightness(area: AreaId, onListening: (ProbeError?) -> Unit, onUpdate: (Int?) -> Unit): AutoCloseable {
         val seat = seatArea(area)
         val listener = object : AmbientLightBrightnessListener {
             override fun onBrightnessUpdated(brightness: Int?) {
-                main.post { onUpdate(brightness) }
+                lane.post { onUpdate(brightness) }
             }
 
             override fun onFailed(e: Exception) {
-                main.post { onUpdate(null) }
+                lane.post { onListening(e.toProbeError()) }
             }
         }
-        light.registerAmbientLightBrightnessListener(seat, listener)
-        return AutoCloseable { light.unregisterAmbientLightBrightnessListener(seat, listener) }
-    }
-
-    /** A synchronous throw is reported like an onFailed callback. */
-    private inline fun call(crossinline onError: (ProbeError) -> Unit, block: () -> Unit) {
-        try {
-            block()
-        } catch (e: RuntimeException) {
-            main.post { onError(e.toProbeError()) }
+        return lane.subscribe(owner, "ambient brightness listener", onListening) {
+            light.registerAmbientLightBrightnessListener(seat, listener)
+            AutoCloseable { light.unregisterAmbientLightBrightnessListener(seat, listener) }
         }
     }
 

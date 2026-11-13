@@ -19,6 +19,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import app.commacabin.probe.Dispatch
 
 private const val FIVE = "ROW_1_LEFT+ROW_1_RIGHT+ROW_2_CENTER+ROW_2_LEFT+ROW_2_RIGHT"
 private const val FRONT = "ROW_1_LEFT+ROW_1_RIGHT"
@@ -45,15 +46,35 @@ private class FakePort : ClimatePort {
     val failValues = mutableSetOf<ClimateProp>()
     val writes = mutableListOf<W>()
     val listeners = mutableMapOf<Pair<ClimateProp, String>, (Float?) -> Unit>()
+    /** Properties whose listener registration fails (reported, nothing registered). */
+    val failRegister = mutableSetOf<ClimateProp>()
+    /** Each registered listener's status callback: a later error means the listener failed. */
+    val listening = mutableMapOf<Pair<ClimateProp, String>, (ProbeError?) -> Unit>()
+    /** When true, capability answers wait in [held] (behind other SDK work) until [release]. */
+    var holdCapability = false
+    val capabilityCalls = mutableListOf<ClimateProp>()
+    /** When true, a write waits in [queued] (the SDK lane) until [runQueued]; its gate runs then. */
+    var holdDispatch = false
+    val queued = mutableListOf<() -> Unit>()
     var calls = 0
     var holdValueReads = false
     val held = mutableListOf<() -> Unit>()
 
     fun release() = held.toList().also { held.clear() }.forEach { it() }
 
+    fun runQueued() = queued.toList().also { queued.clear() }.forEach { it() }
+
+    private fun lane(dispatch: Dispatch, enter: () -> Unit) {
+        val run = { if (dispatch.now()) enter() }
+        if (holdDispatch) queued += run else run()
+    }
+
     override fun capability(prop: ClimateProp, ok: (Access, Map<String, ClosedFloatingPointRange<Float>>, Float?) -> Unit, err: (ProbeError) -> Unit) {
         calls++
-        caps[prop]?.let { ok(it.first, it.second, it.third) } ?: err(ProbeError("X", "no", null))
+        capabilityCalls += prop
+        val cap = caps[prop]
+        val a = { cap?.let { ok(it.first, it.second, it.third) } ?: err(ProbeError("X", "no", null)) }
+        if (holdCapability) held += a else a()
     }
 
     override fun sideAreas(side: Side, ok: (Access, List<String>) -> Unit, err: (ProbeError) -> Unit) {
@@ -72,18 +93,24 @@ private class FakePort : ClimatePort {
         if (side in failSide) err(ProbeError("X", "read failed", null)) else ok(sideValues[side to area])
     }
 
-    override fun write(prop: ClimateProp, area: String, value: Float, ok: (Float?) -> Unit, err: (ProbeError) -> Unit) {
+    override fun write(prop: ClimateProp, area: String, value: Float, dispatch: Dispatch, ok: (Float?) -> Unit, err: (ProbeError) -> Unit) = lane(dispatch) {
         calls++
         writes += W(prop, area, value, null, { ok(it as Float?) }, err)
     }
 
-    override fun writeAuto(area: String, value: Boolean, ok: (Boolean?) -> Unit, err: (ProbeError) -> Unit) {
+    override fun writeAuto(area: String, value: Boolean, dispatch: Dispatch, ok: (Boolean?) -> Unit, err: (ProbeError) -> Unit) = lane(dispatch) {
         calls++
         writes += W(null, area, null, value, { ok(it as Boolean?) }, err)
     }
 
-    override fun observe(prop: ClimateProp, area: String, onUpdate: (Float?) -> Unit): AutoCloseable {
+    override fun observe(prop: ClimateProp, area: String, onListening: (ProbeError?) -> Unit, onUpdate: (Float?) -> Unit): AutoCloseable {
+        if (prop in failRegister) {
+            onListening(ProbeError("SecurityException", "register denied", null))
+            return AutoCloseable {}
+        }
         listeners[prop to area] = onUpdate
+        listening[prop to area] = onListening
+        onListening(null)
         return AutoCloseable { listeners.remove(prop to area) }
     }
 }
@@ -511,17 +538,18 @@ class RestClimateTest {
             override fun sideAreas(state: SideState, ok: (Access, List<String>) -> Unit, err: (ProbeError) -> Unit) = Unit
             override fun read(prop: ControlProp, area: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit) = ok("Infinity")
             override fun readSide(state: SideState, area: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit) = Unit
-            override fun write(prop: ControlProp, area: String, value: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit) {
-                sent += "$prop $value"
+            override fun write(prop: ControlProp, area: String, value: String, dispatch: Dispatch, ok: (String?) -> Unit, err: (ProbeError) -> Unit) {
+                if (dispatch.now()) sent += "$prop $value"
             }
-            override fun writeSide(state: SideState, area: String, value: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit) = Unit
-            override fun move(area: String, control: Move, ok: (String?) -> Unit, err: (ProbeError) -> Unit) = Unit
-            override fun observe(prop: ControlProp, area: String, onUpdate: (String?) -> Unit, onError: (ProbeError) -> Unit) = AutoCloseable {}
+            override fun writeSide(state: SideState, area: String, value: String, dispatch: Dispatch, ok: (String?) -> Unit, err: (ProbeError) -> Unit) = Unit
+            override fun move(area: String, control: Move, motionKey: String, dispatch: Dispatch, ok: (String?) -> Unit, err: (ProbeError) -> Unit) = Unit
+            override fun observe(prop: ControlProp, area: String, onUpdate: (String?) -> Unit, onError: (ProbeError) -> Unit, onRegistered: (ProbeError?) -> Unit) = AutoCloseable {}
         }
         val sdk = SdkClimatePort(control)
-        sdk.write(ClimateProp.TEMP, DRIVER, 22.25f, {}, {})
+        sdk.write(ClimateProp.TEMP, DRIVER, 22.25f, Dispatch.NONE, {}, {})
         var rejected = false
-        sdk.write(ClimateProp.FAN, FRONT, 2.5f, {}, { rejected = true })
+        // A value with no valid payload never reaches the SDK: reported as not sent, not as an SDK failure.
+        sdk.write(ClimateProp.FAN, FRONT, 2.5f, Dispatch({ null }, {}, { rejected = true }), {}, {})
         var read: Float? = 0f
         sdk.read(ClimateProp.TEMP, DRIVER, { read = it }, {})
         assertEquals(listOf("HVAC_TEMPERATURE 22.25"), sent)
@@ -810,5 +838,132 @@ class RestClimateTest {
         val kept = other.groups.single()
         assertEquals(3f, kept.members.single { it.prop == ClimateProp.FAN }.lastRead)
         assertNotEquals(GroupStage.ACTIVE, kept.stage)
+    }
+
+
+    // --- STEP 17: commands wait in the SDK lane; the gate decides right before the SDK entry ---
+
+    private val fanOnly = ClimateChoice(fan = true, temp = false, tempC = 22f)
+
+    @Test
+    fun `queue - a user change heard while a new apply waits refuses it, so nothing is written or restored over it`() {
+        port.holdDispatch = true
+        val run = climate.onRestStart(fanOnly)
+        assertTrue(port.listeners.containsKey(ClimateProp.FAN to FRONT))
+        assertEquals(1, port.queued.size)
+        assertFalse(group().members.single().responseReceived)
+
+        port.listeners.getValue(ClimateProp.FAN to FRONT)(5f)
+        port.runQueued()
+        assertTrue(port.writes.isEmpty())
+        assertTrue(store.groups.isEmpty())
+        climate.onRestEnd(run, "USER")
+        assertTrue(port.writes.isEmpty())
+    }
+
+    @Test
+    fun `queue - a listener that failed to register leaves that item unchanged, the rest goes on`() {
+        port.failRegister += ClimateProp.FAN
+        climate.onRestStart(both)
+        assertTrue(port.writes.none { it.prop == ClimateProp.FAN })
+        assertEquals(ClimateProp.TEMP, port.writes.single().prop)
+    }
+
+    @Test
+    fun `queue - an old rest's command refused after a new rest started changes only the earlier results`() {
+        port.holdDispatch = true
+        val old = climate.onRestStart(fanOnly)
+        climate.onRestEnd(old, "USER")
+        climate.onRestStart(ClimateChoice(fan = false, temp = false, tempC = 22f))
+        val shown = climate.state.items
+        port.runQueued()
+        assertTrue(port.writes.isEmpty())
+        assertTrue(store.groups.isEmpty())
+        assertEquals(shown, climate.state.items)
+        assertTrue(climate.state.earlier.any { it.prop == ClimateProp.FAN && it.result == ClimateResult.SKIPPED })
+    }
+
+    @Test
+    fun `queue - a restore after a door-opened end goes on in the lane`() {
+        val run = climate.onRestStart(fanOnly)
+        answer(port.writes.single())
+        port.holdDispatch = true
+        climate.onRestEnd(run, "DOOR_OPENED")
+        assertEquals(1, port.queued.size)
+        port.runQueued()
+        assertEquals(3f, port.writes[1].value)
+    }
+
+    @Test
+    fun `queue - parking lost while a restore waits refuses it, the member goes back and the group is held`() {
+        val run = climate.onRestStart(fanOnly)
+        answer(port.writes.single())
+        port.holdDispatch = true
+        climate.onRestEnd(run, "USER")
+        parking = ParkingState(GearState.NOT_PARK, false)
+        climate.onParking(parking)
+        port.runQueued()
+        assertEquals(1, port.writes.size)
+        assertEquals(GroupStage.HELD, group().stage)
+        assertEquals(MemberStage.APPLIED, group().members.single().stage)
+        assertTrue(group().members.single().responseReceived)
+    }
+
+
+    @Test
+    fun `queue - a listener failing after it registered refuses the waiting apply, the rest goes on`() {
+        port.holdDispatch = true
+        climate.onRestStart(both)
+        port.listening.getValue(ClimateProp.FAN to FRONT)(ProbeError("VehicleException", "listener failed", null))
+        port.runQueued()
+        assertTrue(port.writes.none { it.prop == ClimateProp.FAN })
+        port.holdDispatch = false
+        port.runQueued()
+        assertEquals(ClimateProp.TEMP, port.writes.single().prop)
+    }
+
+    // --- the ready screen's temperature range behind other SDK work (cold start) ---
+
+    @Test
+    fun `temperature range - an answer that waited in the SDK lane past the timeout is asked once more and shown`() {
+        port.holdCapability = true
+        climate.loadTempRange()
+        scheduler.advance(CLIMATE_READ_TIMEOUT_MS) // the first answer is still behind the door capability
+        assertEquals(listOf(ClimateProp.TEMP, ClimateProp.TEMP), port.capabilityCalls)
+        assertTrue(climate.state.tempRangeLoading) // still checking, no error shown meanwhile
+        assertNull(climate.state.tempRangeProblem)
+
+        port.release() // the late first answer (dropped), then the retry's answer in time
+        assertEquals(TempRange(15f, 30f, 0.5f), climate.state.tempRange)
+        assertNull(climate.state.tempRangeProblem)
+        assertFalse(climate.state.tempRangeLoading)
+        assertEquals(1, log.count { it.startsWith("준비 화면 온도 범위: TempRange") })
+    }
+
+    @Test
+    fun `temperature range - an SDK error or no driver-only area is final, and no answer twice is a failure`() {
+        port.caps[ClimateProp.TEMP] = null
+        climate.loadTempRange()
+        assertEquals("운전석 온도 범위를 확인하지 못했어요", climate.state.tempRangeProblem)
+        assertEquals(1, port.capabilityCalls.size) // an answer is not asked again
+
+        port.caps[ClimateProp.TEMP] = Triple(Access.READ_WRITE, mapOf(FRONT to 15f..30f), 0.5f)
+        val second = owner()
+        second.loadTempRange()
+        assertEquals("운전석만 따로 맞출 수 있는 온도 영역이 없어요", second.state.tempRangeProblem)
+        assertEquals(2, port.capabilityCalls.size)
+
+        port.caps[ClimateProp.TEMP] = Triple(Access.READ_WRITE, mapOf(DRIVER to 15f..30f), 0.5f)
+        port.holdCapability = true
+        val third = owner()
+        third.loadTempRange()
+        scheduler.advance(CLIMATE_READ_TIMEOUT_MS)
+        scheduler.advance(CLIMATE_READ_TIMEOUT_MS)
+        assertEquals(4, port.capabilityCalls.size) // one retry only
+        assertEquals("운전석 온도 범위를 확인하지 못했어요", third.state.tempRangeProblem)
+        assertNull(third.state.tempRange)
+        assertFalse(third.state.tempRangeLoading)
+        port.release() // answers after both timeouts change nothing
+        assertNull(third.state.tempRange)
     }
 }

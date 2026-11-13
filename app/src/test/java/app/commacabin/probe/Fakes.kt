@@ -101,7 +101,18 @@ class FakeLight : LightPort {
         answer { if (error != null) onError(error) else onResult(snapshot) }
     }
 
-    override fun setBrightness(area: AreaId, value: Int, onComplete: (Int?) -> Unit, onError: (ProbeError) -> Unit) {
+    /** When true, a set waits in [queued] (the SDK lane) until [runQueued]; its gate runs then. */
+    var holdDispatch = false
+    val queued = mutableListOf<() -> Unit>()
+
+    fun runQueued() = queued.toList().also { queued.clear() }.forEach { it() }
+
+    override fun setBrightness(area: AreaId, value: Int, dispatch: Dispatch, onComplete: (Int?) -> Unit, onError: (ProbeError) -> Unit) {
+        val run = { if (dispatch.now()) set(value, onComplete, onError) }
+        if (holdDispatch) queued += run else run()
+    }
+
+    private fun set(value: Int, onComplete: (Int?) -> Unit, onError: (ProbeError) -> Unit) {
         beforeSet(value)
         sets += value
         if (!respond) {
@@ -117,8 +128,9 @@ class FakeLight : LightPort {
         onComplete(value)
     }
 
-    override fun observeBrightness(area: AreaId, onUpdate: (Int?) -> Unit): AutoCloseable {
+    override fun observeBrightness(area: AreaId, onListening: (ProbeError?) -> Unit, onUpdate: (Int?) -> Unit): AutoCloseable {
         observer = onUpdate
+        onListening(null)
         return AutoCloseable { observer = null }
     }
 

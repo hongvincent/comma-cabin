@@ -16,6 +16,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import app.commacabin.probe.Dispatch
 
 private const val FIVE = "ROW_1_LEFT+ROW_1_RIGHT+ROW_2_CENTER+ROW_2_LEFT+ROW_2_RIGHT"
 private const val DUAL = "ROW_1_LEFT+ROW_1_RIGHT"
@@ -55,6 +56,24 @@ private class FakeControlPort : ControlPort {
     val writes = mutableListOf<Call>()
     val moves = mutableListOf<Call>()
     val listeners = mutableMapOf<ControlProp, (String?) -> Unit>()
+    /** Registration results: true = reported asynchronously later (held), see [registrations]. */
+    var holdRegistration = false
+    var failRegistration = false
+    val registrations = mutableListOf<() -> Unit>()
+    /** When true, a write or move waits in [queued] (the SDK lane) until [runQueued]; its gate runs then. */
+    var holdDispatch = false
+    val queued = mutableListOf<() -> Unit>()
+    val motionsEnded = mutableListOf<String>()
+    val stopKeys = mutableListOf<String>()
+    /** Each listener's onError (a failure after a normal registration). */
+    val listenerErrors = mutableMapOf<ControlProp, (ProbeError) -> Unit>()
+
+    fun runQueued() = queued.toList().also { queued.clear() }.forEach { it() }
+
+    private fun lane(dispatch: Dispatch, enter: () -> Unit) {
+        val run = { if (dispatch.now()) enter() }
+        if (holdDispatch) queued += run else run()
+    }
 
     override fun capability(prop: ControlProp, ok: (CapabilityResult, CapabilityResult?, Float?) -> Unit, err: (ProbeError) -> Unit) {
         val answer = { ok(caps.getValue(prop), if (prop == ControlProp.SEAT_BACKREST) seatMove else null, if (prop == ControlProp.HVAC_TEMPERATURE) 0.5f else null) }
@@ -72,21 +91,38 @@ private class FakeControlPort : ControlPort {
         if (holdSide) held += answer else answer()
     }
 
-    override fun write(prop: ControlProp, area: String, value: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit) {
+    override fun write(prop: ControlProp, area: String, value: String, dispatch: Dispatch, ok: (String?) -> Unit, err: (ProbeError) -> Unit) = lane(dispatch) {
         writes += Call("${prop.name} $area=$value", ok, err)
     }
 
-    override fun writeSide(state: SideState, area: String, value: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit) {
+    override fun writeSide(state: SideState, area: String, value: String, dispatch: Dispatch, ok: (String?) -> Unit, err: (ProbeError) -> Unit) = lane(dispatch) {
         writes += Call("${state.name} $area=$value", ok, err)
     }
 
-    override fun move(area: String, control: Move, ok: (String?) -> Unit, err: (ProbeError) -> Unit) {
-        moves += Call(control.name, ok, err)
+    override fun move(area: String, control: Move, motionKey: String, dispatch: Dispatch, ok: (String?) -> Unit, err: (ProbeError) -> Unit) {
+        // STOP is never gated (it goes first in the lane).
+        if (control == Move.STOP) {
+            stopKeys += motionKey
+            moves += Call(control.name, ok, err)
+        } else {
+            lane(dispatch) { moves += Call(control.name, ok, err) }
+        }
     }
 
-    override fun observe(prop: ControlProp, area: String, onUpdate: (String?) -> Unit, onError: (ProbeError) -> Unit): AutoCloseable {
+    override fun endMotion(motionKey: String) {
+        motionsEnded += motionKey
+    }
+
+    override fun observe(prop: ControlProp, area: String, onUpdate: (String?) -> Unit, onError: (ProbeError) -> Unit, onRegistered: (ProbeError?) -> Unit): AutoCloseable {
         if (observeThrows) throw SecurityException("register denied")
-        listeners[prop] = onUpdate
+        listenerErrors[prop] = onError
+        val result = {
+            if (failRegistration) onRegistered(ProbeError("SecurityException", "register denied", null)) else {
+                listeners[prop] = onUpdate
+                onRegistered(null)
+            }
+        }
+        if (holdRegistration) registrations += result else result()
         return AutoCloseable { listeners.remove(prop) }
     }
 }
@@ -657,5 +693,131 @@ class ControlBenchTest {
         product = "busy"
         b.stopSeat("수동")
         assertEquals(listOf("BACKWARD", "STOP"), port.moves.map { it.what })
+    }
+
+
+    // --- STEP 17: commands wait in the SDK lane; the gate decides right before the SDK entry ---
+
+    @Test
+    fun `queue - a waiting MOVE is refused when its position listener failed or never confirmed registering`() {
+        port.holdRegistration = true
+        port.failRegistration = true
+        port.holdDispatch = true
+        bench.exploreSeat(Move.BACKWARD)
+        assertEquals(1, port.queued.size)
+        port.registrations.toList().also { port.registrations.clear() }.forEach { it() } // registration failed
+        port.runQueued()
+        assertTrue(port.moves.isEmpty())
+        assertTrue(store.records.isEmpty())
+
+        port.failRegistration = false
+        bench.exploreSeat(Move.BACKWARD) // the registration result never comes
+        port.runQueued()
+        assertTrue(port.moves.isEmpty())
+        assertTrue(store.records.isEmpty())
+        assertFalse(bench.state.busy)
+    }
+
+    @Test
+    fun `queue - parking lost or a listener value change while a write waits sends nothing and its record goes`() {
+        port.holdDispatch = true
+        bench.apply(ControlProp.HVAC_FAN_SPEED)
+        assertEquals(ControlStage.APPLY_REQUESTED, record(ControlProp.HVAC_FAN_SPEED).stage)
+        parking = ParkingState(GearState.NOT_PARK, false)
+        port.runQueued()
+        assertTrue(port.writes.isEmpty())
+        assertTrue(store.records.isEmpty())
+
+        parking = ParkingState(GearState.PARK, false)
+        bench.apply(ControlProp.HVAC_FAN_SPEED)
+        port.listeners.getValue(ControlProp.HVAC_FAN_SPEED)("5")
+        port.runQueued()
+        assertTrue(port.writes.isEmpty())
+        assertTrue(store.records.isEmpty())
+    }
+
+    @Test
+    fun `queue - an explicit STOP refuses the waiting MOVE and is still sent`() {
+        port.holdDispatch = true
+        bench.exploreSeat(Move.BACKWARD)
+        bench.stopSeat("수동")
+        port.runQueued()
+        assertEquals(listOf("STOP"), port.moves.map { it.what })
+        assertTrue(store.records.isEmpty())
+    }
+
+    @Test
+    fun `queue - only the motion's own STOP answer releases it, a failed STOP keeps it and blocks new moves`() {
+        bench.exploreSeat(Move.BACKWARD)
+        val key = seatRecord().requestId
+        port.listeners.getValue(ControlProp.SEAT_BACKREST)("3")
+        assertEquals(listOf(key), port.stopKeys)
+        port.moves[1].err(ProbeError("VehicleException", "stop failed", null))
+        port.moves[0].ok("BACKWARD")
+        scheduler.advance(SEAT_SETTLE_MS)
+        assertTrue(port.motionsEnded.isEmpty())
+
+        bench.discard(ControlProp.SEAT_BACKREST)
+        bench.exploreSeat(Move.BACKWARD)
+        assertEquals(2, port.moves.size)
+        assertTrue(bench.state.message.contains("이동 예약"))
+
+        bench.stopSeat("수동")
+        assertEquals(key, port.stopKeys.last())
+        port.moves.last().ok("STOP")
+        assertEquals(listOf(key), port.motionsEnded)
+    }
+
+    @Test
+    fun `queue - a watchdog STOP or close without an answer keeps the motion, a STOP answer after close releases it`() {
+        bench.exploreSeat(Move.BACKWARD)
+        val key = seatRecord().requestId
+        scheduler.advance(SEAT_WATCHDOG_MS)
+        assertEquals("STOP", port.moves[1].what)
+        bench.close()
+        assertTrue(port.motionsEnded.isEmpty())
+        port.moves[1].ok("STOP")
+        assertEquals(listOf(key), port.motionsEnded)
+    }
+
+    @Test
+    fun `queue - a write cancelled by close takes back only its own record and shows nothing`() {
+        var shown = 0
+        port.holdDispatch = true
+        bench.onState = { shown++ }
+        bench.apply(ControlProp.HVAC_FAN_SPEED)
+        val before = shown
+        bench.close()
+        port.runQueued() // the lane reports it not sent
+        assertTrue(port.writes.isEmpty())
+        assertTrue(store.records.isEmpty())
+        assertEquals(before, shown)
+    }
+
+    @Test
+    fun `queue - a second STOP while one is unanswered is said, not queued`() {
+        bench.exploreSeat(Move.BACKWARD)
+        bench.stopSeat("수동")
+        bench.stopSeat("수동")
+        assertEquals(listOf("BACKWARD", "STOP"), port.moves.map { it.what })
+        assertTrue(bench.state.log.last().contains("먼저 보낸 STOP"))
+    }
+
+
+    @Test
+    fun `queue - a position listener failing after it registered refuses the waiting MOVE, or STOPs one that entered`() {
+        port.holdDispatch = true
+        bench.exploreSeat(Move.BACKWARD)
+        port.listenerErrors.getValue(ControlProp.SEAT_BACKREST)(ProbeError("VehicleException", "listener failed", null))
+        port.runQueued()
+        assertTrue(port.moves.isEmpty())
+        assertTrue(store.records.isEmpty())
+
+        port.holdDispatch = false
+        bench.exploreSeat(Move.BACKWARD) // registers again
+        assertEquals(listOf("BACKWARD"), port.moves.map { it.what })
+        port.listenerErrors.getValue(ControlProp.SEAT_BACKREST)(ProbeError("VehicleException", "listener failed", null))
+        assertEquals(listOf("BACKWARD", "STOP"), port.moves.map { it.what })
+        assertEquals(ControlStage.APPLY_REQUESTED, seatRecord().stage) // entered: the record stays
     }
 }

@@ -13,6 +13,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import app.commacabin.probe.Dispatch
 
 private const val FIVE = "ROW_1_LEFT+ROW_1_RIGHT+ROW_2_CENTER+ROW_2_LEFT+ROW_2_RIGHT"
 private const val FRONT = "ROW_1_LEFT+ROW_1_RIGHT"
@@ -31,6 +32,13 @@ private class FakePort : LightingPort {
     val values = mutableMapOf((LightProp.BRIGHTNESS to FIVE) to 70, (LightProp.COLOR to FIVE) to WHITE_READ)
     val writes = mutableListOf<Write>()
     val listeners = mutableMapOf<Pair<LightProp, String>, (Int?) -> Unit>()
+    /** Properties whose listener registration fails (reported, nothing registered). */
+    val failRegister = mutableSetOf<LightProp>()
+    /** Each registered listener's status callback: a later error means the listener failed. */
+    val listening = mutableMapOf<Pair<LightProp, String>, (ProbeError?) -> Unit>()
+    /** When true, a write waits in [queued] (the SDK lane) until [runQueued]; its gate runs then. */
+    var holdDispatch = false
+    val queued = mutableListOf<() -> Unit>()
     val switchReads = mutableListOf<String>()
     var calls = 0
     var holdAll = false
@@ -45,6 +53,8 @@ private class FakePort : LightingPort {
     }
 
     fun release() = held.toList().also { held.clear() }.forEach { it() }
+
+    fun runQueued() = queued.toList().also { queued.clear() }.forEach { it() }
 
     override fun brightnessCapability(ok: (Access, Map<String, IntRange>) -> Unit, err: (ProbeError) -> Unit) =
         answer { bright?.let { ok(it.first, it.second) } ?: err(ProbeError("X", "no", null)) }
@@ -64,13 +74,24 @@ private class FakePort : LightingPort {
         if (prop in failReads) err(ProbeError("VehicleException", "read failed", null)) else ok(values[prop to area])
     }
 
-    override fun write(prop: LightProp, area: String, value: Int, ok: (Int?) -> Unit, err: (ProbeError) -> Unit) {
-        calls++
-        writes += Write(prop, area, value, ok, err)
+    override fun write(prop: LightProp, area: String, value: Int, dispatch: Dispatch, ok: (Int?) -> Unit, err: (ProbeError) -> Unit) {
+        val run = {
+            if (dispatch.now()) {
+                calls++
+                writes += Write(prop, area, value, ok, err)
+            }
+        }
+        if (holdDispatch) queued += run else run()
     }
 
-    override fun observe(prop: LightProp, area: String, onUpdate: (Int?) -> Unit): AutoCloseable {
+    override fun observe(prop: LightProp, area: String, onListening: (ProbeError?) -> Unit, onUpdate: (Int?) -> Unit): AutoCloseable {
+        if (prop in failRegister) {
+            onListening(ProbeError("SecurityException", "register denied", null))
+            return AutoCloseable {}
+        }
         listeners[prop to area] = onUpdate
+        listening[prop to area] = onListening
+        onListening(null)
         return AutoCloseable { listeners.remove(prop to area) }
     }
 }
@@ -620,5 +641,152 @@ class RestLightingTest {
         assertEquals(saves, other.saves)
         assertEquals(LightStage.APPLY_CONFIRMED, other.records.single { it.prop == LightProp.BRIGHTNESS }.stage)
         assertTrue(run2 > 0)
+    }
+
+
+    // --- STEP 17: commands wait in the SDK lane; the gate decides right before the SDK entry ---
+
+    private fun item(prop: LightProp) = lighting.state.items.single { it.prop == prop }
+
+    @Test
+    fun `queue - a user change heard while a new apply waits refuses it, so nothing is written or restored over it`() {
+        port.holdDispatch = true
+        val run = lighting.onRestStart(true)
+        // The listener was registered before the reads; the saved command waits in the lane.
+        assertTrue(port.listeners.containsKey(LightProp.BRIGHTNESS to FIVE))
+        assertEquals(1, port.queued.size)
+        assertFalse(record(LightProp.BRIGHTNESS).responseReceived)
+
+        port.listeners.getValue(LightProp.BRIGHTNESS to FIVE)(55) // the user turns it to 55 meanwhile
+        port.runQueued()
+        assertTrue(port.writes.none { it.prop == LightProp.BRIGHTNESS })
+        assertTrue(store.records.none { it.prop == LightProp.BRIGHTNESS })
+        assertEquals(LightResult.SKIPPED, item(LightProp.BRIGHTNESS).result)
+        assertFalse(port.listeners.containsKey(LightProp.BRIGHTNESS to FIVE))
+
+        port.holdDispatch = false
+        port.runQueued() // the color goes on
+        answer(port.writes.single())
+        lighting.onRestEnd(run, "USER")
+        assertTrue(port.writes.none { it.prop == LightProp.BRIGHTNESS }) // the user's 55 is never written over
+        assertEquals(listOf(LightProp.COLOR, LightProp.COLOR), port.writes.map { it.prop })
+    }
+
+    @Test
+    fun `queue - a listener that failed to register leaves that item unapplied, the rest goes on`() {
+        port.failRegister += LightProp.BRIGHTNESS
+        lighting.onRestStart(true)
+        assertTrue(store.records.none { it.prop == LightProp.BRIGHTNESS })
+        assertEquals(LightResult.SKIPPED, item(LightProp.BRIGHTNESS).result)
+        assertTrue(item(LightProp.BRIGHTNESS).text.contains("확인할 수 없어"))
+        assertEquals(LightProp.COLOR, port.writes.single().prop)
+    }
+
+    @Test
+    fun `queue - parking lost while the apply waits sends nothing and its record goes`() {
+        port.holdDispatch = true
+        lighting.onRestStart(true)
+        setParking(ParkingState(GearState.NOT_PARK, false))
+        port.runQueued()
+        assertTrue(port.writes.isEmpty())
+        assertTrue(store.records.isEmpty())
+    }
+
+    @Test
+    fun `queue - the rest ending while the apply waits sends nothing, restores nothing and leaves no work`() {
+        port.holdDispatch = true
+        val run = lighting.onRestStart(true)
+        lighting.onRestEnd(run, "USER")
+        port.runQueued()
+        assertTrue(port.writes.isEmpty())
+        assertTrue(store.records.isEmpty())
+        assertFalse(lighting.state.working)
+    }
+
+    @Test
+    fun `queue - a storage failure while a command waits refuses it, and its record stays locked`() {
+        lighting.onRestStart(true)
+        port.holdDispatch = true
+        answer(port.writes.single()) // brightness applied; the color command now waits
+        assertEquals(1, port.queued.size)
+        store.failSaves = true
+        port.values[LightProp.BRIGHTNESS to FIVE] = 50
+        port.listeners.getValue(LightProp.BRIGHTNESS to FIVE)(50) // a user change whose record update fails
+        port.runQueued()
+        assertEquals(1, port.writes.size)
+        assertFalse(record(LightProp.COLOR).responseReceived) // never sent, and kept: not taken as answered or gone
+        assertEquals(LightResult.SKIPPED, item(LightProp.COLOR).result)
+    }
+
+    @Test
+    fun `queue - an old rest's command refused after a new rest started changes only the earlier results`() {
+        port.holdDispatch = true
+        val old = lighting.onRestStart(true)
+        lighting.onRestEnd(old, "USER")
+        lighting.onRestStart(false) // the new rest has the lighting off
+        val shown = lighting.state.items
+        port.runQueued()
+        assertTrue(port.writes.isEmpty())
+        assertEquals(shown, lighting.state.items)
+        assertEquals("무드등 조정을 꺼 두었어요", lighting.state.restLine)
+        assertTrue(lighting.state.earlier.any { it.prop == LightProp.BRIGHTNESS && it.result == LightResult.SKIPPED })
+    }
+
+    @Test
+    fun `queue - a restore after a door-opened end goes on in the lane, with P and the records as its only conditions`() {
+        val run = lighting.onRestStart(true)
+        answer(port.writes[0])
+        answer(port.writes[1])
+        port.holdDispatch = true
+        lighting.onRestEnd(run, "DOOR_OPENED")
+        assertEquals(1, port.queued.size)
+        port.runQueued()
+        assertEquals(70, port.writes[2].value)
+    }
+
+    @Test
+    fun `queue - a user change heard while a restore waits holds it instead of writing over it`() {
+        val run = lighting.onRestStart(true)
+        answer(port.writes[0])
+        answer(port.writes[1])
+        port.holdDispatch = true
+        lighting.onRestEnd(run, "USER")
+        port.listeners.getValue(LightProp.BRIGHTNESS to FIVE)(55)
+        port.runQueued()
+        assertEquals(2, port.writes.size)
+        assertEquals(LightStage.RESTORE_HELD, record(LightProp.BRIGHTNESS).stage)
+        assertTrue(record(LightProp.BRIGHTNESS).responseReceived) // back to the answered apply, for a later [원래대로]
+    }
+
+    @Test
+    fun `queue - a restore of an earlier process registers the listener before its reads, and without one holds`() {
+        store.records = listOf(LightRecord("job", LightProp.BRIGHTNESS, FIVE, 70, 30, LightStage.APPLY_CONFIRMED, "req", 30, responseReceived = true))
+        port.values[LightProp.BRIGHTNESS to FIVE] = 30
+        port.failRegister += LightProp.BRIGHTNESS
+        val first = owner()
+        first.restoreRecords()
+        assertTrue(port.writes.isEmpty())
+        assertEquals(LightStage.RESTORE_HELD, record(LightProp.BRIGHTNESS).stage)
+
+        port.failRegister.clear()
+        first.restoreRecords()
+        assertTrue(port.listeners.containsKey(LightProp.BRIGHTNESS to FIVE))
+        assertEquals(70, port.writes.single().value)
+    }
+
+
+    @Test
+    fun `queue - a listener failing after it registered refuses the waiting apply, the rest goes on`() {
+        port.holdDispatch = true
+        lighting.onRestStart(true)
+        port.listening.getValue(LightProp.BRIGHTNESS to FIVE)(ProbeError("VehicleException", "listener failed", null))
+        assertFalse(port.listeners.containsKey(LightProp.BRIGHTNESS to FIVE)) // removed: it observes nothing reliable
+        port.runQueued()
+        assertTrue(port.writes.none { it.prop == LightProp.BRIGHTNESS })
+        assertTrue(store.records.none { it.prop == LightProp.BRIGHTNESS })
+        assertEquals(LightResult.SKIPPED, item(LightProp.BRIGHTNESS).result)
+        port.holdDispatch = false
+        port.runQueued()
+        assertEquals(LightProp.COLOR, port.writes.single().prop)
     }
 }

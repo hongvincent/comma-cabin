@@ -2,6 +2,7 @@ package app.commacabin.climate
 
 import app.commacabin.probe.Access
 import app.commacabin.probe.Cancellable
+import app.commacabin.probe.Dispatch
 import app.commacabin.probe.ParkingState
 import app.commacabin.probe.ProbeError
 import app.commacabin.probe.RecordLease
@@ -12,6 +13,9 @@ import kotlin.math.max
 const val CLIMATE_READ_TIMEOUT_MS = 5_000L
 const val CLIMATE_WRITE_TIMEOUT_MS = 5_000L
 const val CLIMATE_SETTLE_MS = 500L
+/** "No answer in time" for the ready screen's temperature range is asked again this many times (read-only). */
+const val TEMP_RANGE_RETRIES = 1
+private const val READ_TIMEOUT_TEXT = "${CLIMATE_READ_TIMEOUT_MS}ms 응답 없음"
 
 enum class ClimateResult { WORKING, APPLIED, SKIPPED, UNKNOWN, RESTORED, HELD, EXTERNAL, FAILED, LOCKED }
 
@@ -80,6 +84,18 @@ class RestClimate(
         val autoArea: String?, val powerArea: String?, val dualArea: String?, val skip: String?,
     )
     private class Pending(val requestId: String, val timer: Cancellable, var timedOut: Boolean = false)
+    /** A command waiting in the SDK lane (record saved, not entered). */
+    private class Queued(val requestId: String)
+
+    /** The listener of one property and area, registered before its reads and its command (see [watch]). */
+    private class Watch {
+        var handle: AutoCloseable? = null
+        /** The registration call returned normally (the SDK gives no other ACK). The handle alone proves nothing. */
+        var registered = false
+        /** The value read right before a command of ours; a listener value off it refuses that command at its gate. */
+        var basis: Float? = null
+        var heard: Float? = null
+    }
     /** One restore of one group. [base]: the shared states read at its start; any later move stops further writes. */
     private class Job(val groupId: String, val manual: Boolean) {
         var base: Map<Side, Boolean> = emptyMap()
@@ -95,6 +111,8 @@ class RestClimate(
     private var storageFault: String? = null
     /** Request key ("group|FAN|area", "group|AUTO") → the open request. */
     private val pending = mutableMapOf<String, Pending>()
+    /** Request key → command waiting in the SDK lane. Counts as open like [pending]. */
+    private val queued = mutableMapOf<String, Queued>()
     private val confirming = mutableSetOf<String>()
     /** Shared states read right before each command. */
     private val preShared = mutableMapOf<String, Map<Side, Boolean?>>()
@@ -103,7 +121,8 @@ class RestClimate(
     private val restoreAfterAnswer = mutableSetOf<String>()
     private val applyWaiters = mutableMapOf<String, () -> Unit>()
     private val restoreWaiters = mutableMapOf<String, () -> Unit>()
-    private val observers = mutableMapOf<String, AutoCloseable>()
+    /** "PROP|area" → its listener. A property and area belongs to one group member at a time. */
+    private val watches = mutableMapOf<String, Watch>()
     private val checking = mutableMapOf<String, Boolean>()
     private val runItems = linkedMapOf<String, ClimateItemUi>()
     private val earlierItems = linkedMapOf<String, ClimateItemUi>()
@@ -156,8 +175,8 @@ class RestClimate(
         closed = true
         dropCheck()
         pending.values.forEach { it.timer.cancel() }
-        observers.values.forEach { runCatching { it.close() } }
-        observers.clear()
+        watches.values.forEach { w -> w.handle?.let { runCatching { it.close() } } }
+        watches.clear()
     }
 
     /** Read-only: the driver-only temperature range and step for the ready screen. Nothing is written. */
@@ -165,9 +184,23 @@ class RestClimate(
         if (!alive || tempRangeLoading) return
         tempRangeLoading = true
         publish()
+        readTempRange(TEMP_RANGE_RETRIES)
+    }
+
+    /**
+     * The read waits in the SDK lane behind the reads before it (on a cold start each first capability takes
+     * seconds), and its timeout counts that wait. So only "no answer in time" is asked again, read-only, at most
+     * [retries] times, still shown as checking; an answer (an SDK error, or no usable area) is final. A late answer
+     * of an earlier try is dropped as before.
+     */
+    private fun readTempRange(retries: Int) {
         withTimeout({ ok, err -> port.capability(ClimateProp.TEMP, { a, m, inc -> ok(Triple(a, m, inc)) }, err) }) { cap, e ->
-            tempRangeLoading = false
             if (!alive) return@withTimeout
+            if (cap == null && e == READ_TIMEOUT_TEXT && retries > 0) {
+                log("준비 화면 온도 범위: ${CLIMATE_READ_TIMEOUT_MS}ms 안에 응답이 없어 한 번 더 조회해요(조회만)")
+                return@withTimeout readTempRange(retries - 1)
+            }
+            tempRangeLoading = false
             val bounds = cap?.second?.get(DRIVER_AREA)
             val inc = cap?.third
             tempRangeProblem = when {
@@ -193,9 +226,10 @@ class RestClimate(
         if (preparing) {
             preparing = false
             opSeq++
+            dropUnusedWatches()
             log("$why: 공조 적용 준비 취소")
         }
-        val open = pending.keys.map { it.substringBefore('|') } + confirming.map { it.substringBefore('|') } + restoreAfterAnswer +
+        val open = (pending.keys + queued.keys).map { it.substringBefore('|') } + confirming.map { it.substringBefore('|') } + restoreAfterAnswer +
             restoreQueue.map { it.groupId } + listOfNotNull(restoring?.groupId) + jobRun.filterValues { it == run?.id }.keys.filter { group(it) != null }
         if (open.isNotEmpty() && parkLost.addAll(open)) log("$why: 공조 그룹 ${open.toSet().size}개는 [원래대로] 전까지 새로 되돌리지 않음")
     }
@@ -302,13 +336,13 @@ class RestClimate(
             ).joinToString(" · ")
     }
 
-    private fun working() = preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || confirming.isNotEmpty()
+    private fun working() = preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || queued.isNotEmpty() || confirming.isNotEmpty()
 
     /** For the debug tools. */
     fun busyReason(): String? = when {
         !alive -> null
         loadProblem != null -> "휴식 공조 기록을 읽을 수 없어요"
-        preparing || pending.isNotEmpty() || confirming.isNotEmpty() || restoring != null || restoreQueue.isNotEmpty() -> "휴식 공조를 맞추거나 되돌리는 중이에요"
+        preparing || pending.isNotEmpty() || queued.isNotEmpty() || confirming.isNotEmpty() || restoring != null || restoreQueue.isNotEmpty() -> "휴식 공조를 맞추거나 되돌리는 중이에요"
         groups.isNotEmpty() -> "정리하지 않은 휴식 공조 기록이 있어요"
         else -> null
     }
@@ -350,6 +384,7 @@ class RestClimate(
         if (preparing) {
             preparing = false
             opSeq++
+            dropUnusedWatches()
         }
         if (parkingLost) parkingLost("휴식 종료 원인 $reason")
         deferred = false
@@ -519,12 +554,24 @@ class RestClimate(
 
     /** Current value, original and target both writable, then the shared states as the last reads, then the record, a final check and the command. */
     private fun applyItem(token: Int, runId: Int, item: Item, then: () -> Unit) {
+        val wk = itemKey(item.prop, item.area)
+        // Registered before the reads (the lane keeps the order): a change while our command waits is heard.
+        val w = watch(item.prop, item.area)
+        val done = {
+            if (memberOf(wk) == null) closeWatch(wk)
+            then()
+        }
         askOrNull(token, runId, "${item.prop.label} 현재값", { ok, err -> port.read(item.prop, item.area, ok, err) }) { cur, readErr ->
+            if (cur != null && watches[wk] === w) {
+                w.basis = cur
+                w.heard = null
+            }
             val target = when (item.prop) {
                 ClimateProp.FAN -> cur?.let { c -> (c - 1f).takeIf { it >= max(item.bounds!!.start, 1f) } }
                 ClimateProp.TEMP -> item.wanted
             }
             val why = when {
+                watches[wk] !== w || !w.registered -> "차량 값 변화를 확인할 수 없어 바꾸지 않았어요"
                 cur == null -> userText("현재 값을 읽지 못해 바꾸지 않았어요", readErr)
                 !writable(item, cur) -> "지금 값을 나중에 그대로 되돌릴 수 없어 바꾸지 않았어요"
                 target == null -> "이미 가장 약한 단계라 그대로 두었어요"
@@ -534,7 +581,7 @@ class RestClimate(
             }
             if (why != null || cur == null || target == null) {
                 mark(item.prop, item.area, cur, ClimateResult.SKIPPED, why ?: "바꾸지 않았어요")
-                return@askOrNull then()
+                return@askOrNull done()
             }
             readShared(item.powerArea!!, item.autoArea!!, item.dualArea, guard = { current(token, runId) }) { shared ->
                 val existing = groups.firstOrNull { it.autoArea == item.autoArea }
@@ -550,13 +597,13 @@ class RestClimate(
                 }
                 if (block != null || auto == null) {
                     mark(item.prop, item.area, cur, ClimateResult.SKIPPED, block ?: "공조 상태를 확인하지 못해 바꾸지 않았어요")
-                    return@readShared then()
+                    return@readShared done()
                 }
                 if (existing != null && existing.expected.any { (k, v) -> shared[Side.valueOf(k)] != v }) {
                     // The group's shared state moved since the app's last command: a change from the vehicle side.
                     external(existing, "차량에서 공조 설정이 바뀌어 이번 휴식의 공조 조정을 멈췄어요")
                     mark(item.prop, item.area, cur, ClimateResult.SKIPPED, "차량에서 공조 설정이 바뀌어 바꾸지 않았어요")
-                    return@readShared then()
+                    return@readShared done()
                 }
                 val member = ClimateMember(item.prop, item.area, cur, target, MemberStage.APPLY_REQUESTED, newId(), target, responseReceived = false)
                 val observed = observedOf(shared)
@@ -565,16 +612,9 @@ class RestClimate(
                     dualArea = existing.dualArea ?: item.dualArea,
                     expected = existing.expected + observed.filterKeys { it !in existing.expected },
                 ) ?: ClimateGroup(newId(), item.autoArea, item.powerArea, item.dualArea, autoOriginal = auto, expected = observed, stage = GroupStage.ACTIVE, members = listOf(member))
-                val before = groups
                 if (!persist(if (existing == null) groups + group else replaceGroup(group))) {
                     mark(item.prop, item.area, cur, ClimateResult.SKIPPED, "기록을 저장하지 못해 바꾸지 않았어요")
-                    return@readShared then()
-                }
-                if (!current(token, runId) || commandBlock(item.prop, item.area, item.autoArea, item.powerArea, runId, group.groupId) != null) {
-                    // Certainly not sent: the record goes back (if the file can still change) and nothing is written.
-                    persist(before)
-                    mark(item.prop, item.area, cur, ClimateResult.SKIPPED, "명령 직전 조건이 바뀌어 바꾸지 않았어요")
-                    return@readShared if (current(token, runId)) then() else Unit
+                    return@readShared done()
                 }
                 if (existing == null) log("공조 그룹 시작: 자동 모드 원래 $auto(처음 변경 전 한 번만 저장)")
                 jobRun[group.groupId] = runId
@@ -582,7 +622,15 @@ class RestClimate(
                 preShared[k] = shared
                 applyWaiters[k] = { if (current(token, runId)) then() }
                 mark(group, member, ClimateResult.WORKING, "맞추는 중이에요")
-                send(group.groupId, member)
+                val gate = { if (!current(token, runId)) "휴식이 끝났어요" else commandBlock(item.prop, item.area, item.autoArea, item.powerArea, runId, group.groupId) }
+                send(group.groupId, member, gate) { why ->
+                    // Certainly not sent: only this request's member goes (if the file can still change; else it stays locked).
+                    unsentApply(existing, group, member)
+                    if (memberOf(wk) == null) closeWatch(wk)
+                    preShared.remove(k)
+                    markRun(runId, item.prop, item.area, cur, ClimateResult.SKIPPED, userText("명령 직전 조건이 바뀌어 바꾸지 않았어요", why))
+                    applyWaiters.remove(k)?.invoke()
+                }
             }
         }
     }
@@ -628,19 +676,78 @@ class RestClimate(
 
     private fun autoKey(groupId: String) = "$groupId|AUTO"
 
-    private fun inFlight(groupId: String) = pending.keys.any { it.startsWith("$groupId|") } || confirming.any { it.startsWith("$groupId|") }
+    private fun inFlight(groupId: String) =
+        pending.keys.any { it.startsWith("$groupId|") } || queued.keys.any { it.startsWith("$groupId|") } || confirming.any { it.startsWith("$groupId|") }
 
     private fun observedOf(shared: Map<Side, Boolean?>) = shared.filterValues { it != null }.mapKeys { it.key.name }.mapValues { it.value!! }
 
-    private fun send(groupId: String, m: ClimateMember) {
-        val k = key(groupId, m.prop, m.area)
+    /** [m] is saved in its group; it waits in the SDK lane and enters only through [dispatch]. */
+    private fun send(groupId: String, m: ClimateMember, gate: () -> String?, notSent: (String) -> Unit) {
         val requestId = m.requestId
-        pending[k] = Pending(requestId, scheduler.schedule(CLIMATE_WRITE_TIMEOUT_MS) { onTimeout(k, requestId) })
-        log("${m.prop.label} ${if (m.stage == MemberStage.RESTORE_REQUESTED) "복원" else "적용"} 요청 #${requestId.take(8)} ${m.area} payload=${ClimateValues.show(m.prop, m.payload)} (원래 ${ClimateValues.show(m.prop, m.original)})")
-        publish()
-        port.write(m.prop, m.area, m.payload, { echo -> onAnswer(groupId, m.prop, m.area, requestId, "onComplete(${echo?.let { ClimateValues.show(m.prop, it) }})", true, echo) }, { e ->
+        val what = "${m.prop.label} ${if (m.stage == MemberStage.RESTORE_REQUESTED) "복원" else "적용"} ${m.area} payload=${ClimateValues.show(m.prop, m.payload)} (원래 ${ClimateValues.show(m.prop, m.original)})"
+        val still = { group(groupId)?.member(m.prop, m.area)?.requestId == requestId }
+        port.write(m.prop, m.area, m.payload, dispatch(key(groupId, m.prop, m.area), requestId, what, itemKey(m.prop, m.area), still, gate, notSent), { echo ->
+            onAnswer(groupId, m.prop, m.area, requestId, "onComplete(${echo?.let { ClimateValues.show(m.prop, it) }})", true, echo)
+        }, { e ->
             onAnswer(groupId, m.prop, m.area, requestId, "onFailed(${e.text()})", false, null)
         })
+    }
+
+    /**
+     * A saved command [k] waiting in the SDK lane. Right before the SDK entry, on main: the record must still be this
+     * request ([still]); for a member value ([watchKey]) its listener registered with no value off the read the
+     * command is based on; and [gate] passes. The write timeout starts then, before the entry. [notSent]: it never
+     * entered; this request's tracking is undone first, the caller handles its record.
+     */
+    private fun dispatch(k: String, requestId: String, what: String, watchKey: String?, still: () -> Boolean, gate: () -> String?, notSent: (String) -> Unit): Dispatch {
+        queued[k] = Queued(requestId)
+        publish()
+        return Dispatch(
+            gate = {
+                val w = watchKey?.let { watches[it] }
+                when {
+                    queued[k]?.requestId != requestId || !still() -> "기록이 바뀌었어요"
+                    watchKey != null && (w == null || !w.registered) -> "차량 값 변화를 확인할 리스너가 없어요"
+                    w?.heard != null -> "명령을 기다리는 동안 차량 값이 바뀌었어요(${w.heard})"
+                    else -> gate()
+                }
+            },
+            onStart = {
+                queued.remove(k)
+                watchKey?.let { watches[it]?.basis = null }
+                pending[k] = Pending(requestId, scheduler.schedule(CLIMATE_WRITE_TIMEOUT_MS) { onTimeout(k, requestId) })
+                log("$what 요청 #${requestId.take(8)}")
+                publish()
+            },
+            onNotSent = { why ->
+                if (queued[k]?.requestId == requestId) queued.remove(k)
+                watchKey?.let { watches[it]?.basis = null }
+                pending[k]?.takeIf { it.requestId == requestId }?.let {
+                    it.timer.cancel()
+                    pending.remove(k)
+                }
+                log("$what 요청 #${requestId.take(8)} 보내지 않음: $why")
+                notSent(why)
+                publish()
+            },
+        )
+    }
+
+    /**
+     * An apply that never entered: its member leaves the group only while it is still that request. A group this
+     * apply created goes with it when nothing else is in it; fields this apply added go back if nothing changed them.
+     */
+    private fun unsentApply(existing: ClimateGroup?, added: ClimateGroup, member: ClimateMember) {
+        val g = group(added.groupId) ?: return
+        val m = g.member(member.prop, member.area)?.takeIf { it.requestId == member.requestId } ?: return
+        val rest = g.members.filter { it !== m }
+        val next = when {
+            existing == null && rest.isEmpty() -> groups.filter { it.groupId != g.groupId }
+            existing != null && g.expected == added.expected && g.dualArea == added.dualArea ->
+                replaceGroup(g.copy(members = rest, expected = existing.expected, dualArea = existing.dualArea))
+            else -> replaceGroup(g.copy(members = rest))
+        }
+        if (persist(next) && existing == null && rest.isEmpty()) jobRun.remove(g.groupId)
     }
 
     /** The request stays open and its group locked. An apply chain goes on to the next item; a group restore stops. */
@@ -715,7 +822,7 @@ class RestClimate(
                     restoring -> mark(next, nm, if (good) ClimateResult.RESTORED else ClimateResult.FAILED, if (good) "원래대로 돌렸어요" else "되돌렸는지 확인하지 못했어요")
                     good -> {
                         mark(next, nm, ClimateResult.APPLIED, if (prop == ClimateProp.FAN) "한 단계 줄였어요(${ClimateValues.show(prop, m.original)}→${ClimateValues.show(prop, m.target)})" else "${ClimateValues.show(prop, m.target)}°C로 맞췄어요")
-                        if (!unknown) observe(groupId, nm)
+                        if (!unknown) watch(nm.prop, nm.area)
                     }
                     else -> mark(next, nm, ClimateResult.UNKNOWN, "바뀌었는지 확인하지 못했어요")
                 }
@@ -743,14 +850,53 @@ class RestClimate(
 
     // --- changes from the vehicle side ---
 
-    private fun observe(groupId: String, m: ClimateMember) {
-        val k = key(groupId, m.prop, m.area)
-        if (observers.containsKey(k)) return
+    /**
+     * The item's listener, registered once and before its reads (the lane keeps that order), so a value that
+     * changes while a command of ours waits is heard. Only [Watch.registered] counts as registered. A failed
+     * registration, or a listener error later, leaves no watch (the listener is removed): the item gets no
+     * command until a new one registers. A listener error is not an external change.
+     */
+    private fun watch(prop: ClimateProp, area: String): Watch {
+        val k = itemKey(prop, area)
+        watches[k]?.let { return it }
+        val w = Watch()
+        watches[k] = w
         try {
-            observers[k] = port.observe(m.prop, m.area) { v -> onListener(groupId, m.prop, m.area, v) }
+            w.handle = port.observe(prop, area, { e ->
+                if (watches[k] !== w) return@observe
+                if (e == null) {
+                    w.registered = true
+                } else {
+                    closeWatch(k)
+                    if (alive) log("${prop.label} 리스너 ${if (w.registered) "오류" else "등록 실패"}: ${e.text()}. 새로 등록하기 전에는 이 항목에 명령하지 않아요")
+                }
+            }) { v -> onWatch(k, w, prop, area, v) }
         } catch (e: RuntimeException) {
-            log("${m.prop.label} 리스너 등록 실패: ${e.javaClass.name}. 종료 직전 조회로만 외부 변경을 확인")
+            watches.remove(k)
+            log("${prop.label} 리스너 등록 실패: ${e.javaClass.name}. 이 항목은 명령하지 않아요")
         }
+        return w
+    }
+
+    /** A value off the basis of a waiting command refuses it at its gate; then the member's external-change check. */
+    private fun onWatch(k: String, w: Watch, prop: ClimateProp, area: String, value: Float?) {
+        if (!alive || value == null || watches[k] !== w) return
+        w.basis?.let { if (!ClimateValues.same(prop, value, it)) w.heard = value }
+        memberOf(k)?.let { onListener(it.groupId, prop, area, value) }
+    }
+
+    private fun itemKey(prop: ClimateProp, area: String) = "${prop.name}|$area"
+
+    /** The group holding the member of this property and area. */
+    private fun memberOf(itemKey: String) = groups.firstOrNull { g -> g.members.any { itemKey(it.prop, it.area) == itemKey } }
+
+    /** Preparation stopped: listeners of items that got no member go. */
+    private fun dropUnusedWatches() {
+        watches.keys.filter { memberOf(it) == null }.forEach { closeWatch(it) }
+    }
+
+    private fun closeWatch(itemKey: String) {
+        watches.remove(itemKey)?.handle?.let { runCatching { it.close() } }
     }
 
     /** A settled group: under the app's control with nothing of ours open on it. Only then a vehicle-side change is judged. */
@@ -758,8 +904,7 @@ class RestClimate(
         restoring?.groupId != g.groupId && restoreQueue.none { it.groupId == g.groupId }
 
     /** A listener value is not proof (a cached first value can be old): a differing one only starts separate reads. */
-    private fun onListener(groupId: String, prop: ClimateProp, area: String, value: Float?) {
-        if (!alive || value == null) return
+    private fun onListener(groupId: String, prop: ClimateProp, area: String, value: Float) {
         val g = group(groupId)?.takeIf { settled(it) } ?: return
         val m = g.member(prop, area)?.takeIf { it.stage == MemberStage.APPLIED } ?: return
         if (ClimateValues.same(prop, value, m.target)) return
@@ -814,7 +959,7 @@ class RestClimate(
     private fun discardBlock(): String? = when {
         loadProblem != null -> "기록 파일에 문제가 있어 앱에서 지우지 않아요"
         storageFault != null -> "기록 저장 오류가 있어 지울 수 없어요"
-        preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || confirming.isNotEmpty() -> "진행 중인 공조 작업이 끝난 뒤에 지울 수 있어요"
+        preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || queued.isNotEmpty() || confirming.isNotEmpty() -> "진행 중인 공조 작업이 끝난 뒤에 지울 수 있어요"
         groups.none { !it.locked } -> if (groups.isEmpty()) "지울 기록이 없어요" else "결과를 모르는 요청이 있는 기록은 지울 수 없어요"
         else -> null
     }
@@ -897,10 +1042,17 @@ class RestClimate(
         if (g.stage != job.stage) return release() // the group became unknown, held or external meanwhile: no further writes
         if (i == list.size) return finishGroup(job)
         val m = g.member(list[i].first, list[i].second) ?: return restoreMember(job, list, i + 1)
+        // Registered before the reads, also when no listener was left (an earlier process, a held group).
+        val wk = itemKey(m.prop, m.area)
+        val w = watch(m.prop, m.area)
         restoreCapability(m) { problem ->
             if (restoring !== job) return@restoreCapability
             if (problem != null) return@restoreCapability hold(group(job.groupId) ?: return@restoreCapability release(), problem)
             readOrNull(m.prop, m.area) { cur, readErr ->
+                if (cur != null && watches[wk] === w) {
+                    w.basis = cur
+                    w.heard = null
+                }
                 val g1 = group(job.groupId) ?: return@readOrNull release()
                 readShared(g1.powerArea, g1.autoArea, g1.dualArea, guard = { alive && restoring === job }) { shared ->
                     val now = group(job.groupId) ?: return@readShared release()
@@ -918,20 +1070,29 @@ class RestClimate(
                         ClimateValues.same(m.prop, cur, nm.original) -> return@readShared restoreMember(job, list, i + 1) // already the original; the final re-read confirms
                         !job.manual && !ClimateValues.same(m.prop, cur, nm.target) -> return@readShared external(now, "차량에서 바뀐 공조 설정은 유지했어요", inRestore = true)
                     }
+                    if (watches[wk] !== w || !w.registered) return@readShared hold(now, "차량 값 변화를 확인할 수 없어 되돌리지 않았어요")
                     (restoreHold(job.groupId) ?: commandTarget(nm))?.let { return@readShared hold(now, it) }
                     val sent = nm.copy(stage = MemberStage.RESTORE_REQUESTED, requestId = newId(), payload = nm.original, responseReceived = false, lastEcho = null, lastRead = cur)
                     val next = now.copy(members = now.members.map { if (it === nm) sent else it })
                     if (!persist(replaceGroup(next))) return@readShared release()
-                    (restoreHold(job.groupId) ?: commandTarget(sent))?.let {
-                        // Saved but certainly not sent: back to the record as it was, then held.
-                        persist(replaceGroup(now))
-                        return@readShared hold(now, it)
-                    }
                     val k = key(job.groupId, sent.prop, sent.area)
                     preShared[k] = shared
                     restoreWaiters[k] = { restoreMember(job, list, i + 1) }
                     mark(next, sent, ClimateResult.WORKING, "되돌리는 중이에요")
-                    send(job.groupId, sent)
+                    val gate = { if (restoring !== job || group(job.groupId)?.stage != job.stage) "복원 작업이 바뀌었어요" else restoreHold(job.groupId) ?: commandTarget(sent) }
+                    send(job.groupId, sent, gate) { why ->
+                        // Saved but certainly not sent: this member back as it was (this request only), then held.
+                        preShared.remove(k)
+                        restoreWaiters.remove(k)
+                        val g2 = group(job.groupId)
+                        val cm = g2?.member(sent.prop, sent.area)
+                        if (g2 != null && cm?.requestId == sent.requestId) {
+                            persist(replaceGroup(g2.copy(members = g2.members.map { if (it === cm) nm else it })))
+                            if (restoring === job) hold(group(job.groupId) ?: now, userText("명령 직전 조건이 바뀌어 되돌리지 않았어요", why))
+                        } else if (restoring === job) {
+                            release() // the record is no longer this request: leave it as it is
+                        }
+                    }
                 }
             }
         }
@@ -1000,18 +1161,31 @@ class RestClimate(
                 if (why != null) return@readShared hold(n, why)
                 val sent = n.copy(stage = GroupStage.AUTO_RESTORE_REQUESTED, autoRequestId = newId(), autoResponseReceived = false)
                 if (!persist(replaceGroup(sent))) return@readShared release()
-                restoreHold(n.groupId)?.let {
-                    persist(replaceGroup(n))
-                    return@readShared hold(n, it)
-                }
+                val before = job.stage
                 job.stage = GroupStage.AUTO_RESTORE_REQUESTED
                 val k = autoKey(n.groupId)
                 val requestId = sent.autoRequestId!!
-                pending[k] = Pending(requestId, scheduler.schedule(CLIMATE_WRITE_TIMEOUT_MS) { onTimeout(k, requestId) })
                 restoreWaiters[k] = { verify(job, null) }
-                log("자동 모드 복원 요청 #${requestId.take(8)} ${n.autoArea} payload=${n.autoOriginal} ([원래대로])")
                 markAuto(sent, ClimateResult.WORKING, "자동 모드를 되돌리는 중이에요")
-                port.writeAuto(n.autoArea, n.autoOriginal, { echo -> onAutoAnswer(n.groupId, requestId, "onComplete($echo)", true) }, { e -> onAutoAnswer(n.groupId, requestId, "onFailed(${e.text()})", false) })
+                val dispatch = dispatch(
+                    k, requestId, "자동 모드 복원 ${n.autoArea} payload=${n.autoOriginal} ([원래대로])", null,
+                    still = { group(n.groupId)?.autoRequestId == requestId },
+                    gate = { if (restoring !== job) "복원 작업이 바뀌었어요" else restoreHold(n.groupId) },
+                ) { why ->
+                    // Saved but certainly not sent: the auto fields back as they were (this request only), then held.
+                    restoreWaiters.remove(k)
+                    val g2 = group(n.groupId)
+                    if (g2?.autoRequestId == requestId) {
+                        persist(replaceGroup(g2.copy(stage = n.stage, autoRequestId = n.autoRequestId, autoResponseReceived = n.autoResponseReceived)))
+                        if (restoring === job) {
+                            job.stage = before
+                            hold(group(n.groupId) ?: n, userText("명령 직전 조건이 바뀌어 자동 모드를 되돌리지 않았어요", why))
+                        }
+                    } else if (restoring === job) {
+                        release() // the record is no longer this request: leave it as it is
+                    }
+                }
+                port.writeAuto(n.autoArea, n.autoOriginal, dispatch, { echo -> onAutoAnswer(n.groupId, requestId, "onComplete($echo)", true) }, { e -> onAutoAnswer(n.groupId, requestId, "onFailed(${e.text()})", false) })
             }
         }
     }
@@ -1178,7 +1352,7 @@ class RestClimate(
             timer.cancel()
             done(v, e)
         }
-        timer = scheduler.schedule(CLIMATE_READ_TIMEOUT_MS) { finish(null, "${CLIMATE_READ_TIMEOUT_MS}ms 응답 없음") }
+        timer = scheduler.schedule(CLIMATE_READ_TIMEOUT_MS) { finish(null, READ_TIMEOUT_TEXT) }
         try {
             call({ finish(it, null) }, { finish(null, it.text()) })
         } catch (e: RuntimeException) {
@@ -1217,9 +1391,8 @@ class RestClimate(
         return true
     }
 
-    private fun closeObserver(k: String) {
-        observers.remove(k)?.let { runCatching { it.close() } }
-    }
+    /** [k]: a request key ("group|PROP|area"); its property and area's listener goes. */
+    private fun closeObserver(k: String) = closeWatch(k.substringAfter('|'))
 
     // --- screen state ---
 
@@ -1231,6 +1404,13 @@ class RestClimate(
 
     private fun mark(prop: ClimateProp, area: String, original: Float?, result: ClimateResult, text: String) {
         runItems["${prop.name}|$area"] = ClimateItemUi(prop, area, original?.let { originalText(prop, it) }, result, text)
+        publish()
+    }
+
+    /** An item of run [runId]: on the latest rest's lines only while that rest is the latest, else with the earlier results. */
+    private fun markRun(runId: Int, prop: ClimateProp, area: String, original: Float?, result: ClimateResult, text: String) {
+        if (run?.id == runId) return mark(prop, area, original, result, text)
+        earlierItems["${prop.name}|$area"] = ClimateItemUi(prop, area, original?.let { originalText(prop, it) }, result, text)
         publish()
     }
 

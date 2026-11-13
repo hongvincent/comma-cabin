@@ -4,6 +4,7 @@ import ai.pleos.playground.vehicle.Vehicle
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import app.commacabin.climate.FileClimateStore
 import app.commacabin.climate.RestClimate
@@ -21,19 +22,27 @@ import app.commacabin.probe.Scheduler
 import app.commacabin.sdk.CarParkingSource
 import app.commacabin.sdk.PleosControlPort
 import app.commacabin.sdk.PleosLightPort
+import app.commacabin.sdk.SdkLane
 import java.io.File
 
 /**
  * The product lighting for the whole process, apart from any Activity: its own Handler (an Activity's
- * removeCallbacksAndMessages never touches it), its own Vehicle and parking source, and the only
- * [RestLighting] owner, so an answer or a restore already sent finishes while the process lives, and a new
- * Activity never adds a second owner. Main thread only. Nothing here survives the process being killed.
+ * removeCallbacksAndMessages never touches it), the process's only Vehicle and SDK lane, its parking source,
+ * and the only [RestLighting] owner, so an answer or a restore already sent finishes while the process lives,
+ * and a new Activity never adds a second owner. Main thread only. Nothing here survives the process being killed.
  */
 class CabinProcess private constructor(context: Context) {
     /** Only the app's files directory is kept; no Context is held in this process-wide object. */
     private val files: File = context.applicationContext.filesDir
     private val main = Handler(Looper.getMainLooper())
-    private val vehicle = Vehicle(context.applicationContext).also { it.initialize() }
+    /**
+     * The process's only Vehicle, also for the Activity's debug tools. Never released while the process lives: an
+     * Activity's end does not prove that its SDK calls, callbacks and listener removals are over.
+     */
+    val vehicle = Vehicle(context.applicationContext).also { it.initialize() }
+
+    /** The app's only way into the SDK (one worker thread). Its callbacks go to this process-wide Handler. */
+    val lane = SdkLane(post = { main.post(it) }, log = { line -> Log.i(LANE_TAG, line) }, clock = SystemClock::elapsedRealtime)
     private val scheduler = object : Scheduler {
         override fun schedule(delayMs: Long, task: () -> Unit): Cancellable {
             val runnable = Runnable { task() }
@@ -47,7 +56,7 @@ class CabinProcess private constructor(context: Context) {
     var debugBusy: () -> String? = { null }
 
     val lighting: RestLighting = RestLighting(
-        port = SdkLightingPort(PleosLightPort(vehicle.getLight(), main), PleosControlPort(vehicle, main)),
+        port = SdkLightingPort(PleosLightPort(vehicle.getLight(), lane, this), PleosControlPort(vehicle, lane, this)),
         store = FileLightStore(File(files, FileLightStore.FILE_NAME)),
         scheduler = scheduler,
         parking = { parking.state },
@@ -58,7 +67,7 @@ class CabinProcess private constructor(context: Context) {
 
     /** Product climate: the same lifetime, Handler, Vehicle and parking source as the lighting; an independent owner. */
     val climate: RestClimate = RestClimate(
-        port = SdkClimatePort(PleosControlPort(vehicle, main)),
+        port = SdkClimatePort(PleosControlPort(vehicle, lane, this)),
         store = FileClimateStore(File(files, FileClimateStore.FILE_NAME)),
         scheduler = scheduler,
         parking = { parking.state },
@@ -96,6 +105,7 @@ class CabinProcess private constructor(context: Context) {
     companion object {
         private const val TAG = "RestLighting"
         private const val CLIMATE_TAG = "RestClimate"
+        private const val LANE_TAG = "SdkLane"
         private var instance: CabinProcess? = null
 
         /** Main thread only. */

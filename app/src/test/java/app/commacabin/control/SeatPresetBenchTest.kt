@@ -10,6 +10,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import app.commacabin.probe.Dispatch
 
 private class FakePresetPort : SeatPresetPort {
     var access = Access.WRITE
@@ -18,17 +19,36 @@ private class FakePresetPort : SeatPresetPort {
     val failures = mutableListOf<(ProbeError) -> Unit>()
     var throwOnSelect = false
     var stops = 0
+    /** When true, a select waits in [queued] (the SDK lane) until [runQueued]; its gate runs then. */
+    var holdDispatch = false
+    val queued = mutableListOf<() -> Unit>()
+    val motionKeys = mutableListOf<String>()
+    val motionsEnded = mutableListOf<String>()
+    /** When set, STOP answers wait here instead of answering at once. */
+    var holdStops = false
+    val stopAnswers = mutableListOf<Pair<() -> Unit, (ProbeError) -> Unit>>()
+
+    fun runQueued() = queued.toList().also { queued.clear() }.forEach { it() }
 
     override fun capability(ok: (Access, Map<String, IntRange>) -> Unit, err: (ProbeError) -> Unit) = ok(access, numbers)
     override fun position(axis: SeatAxis, area: String, ok: (Int?) -> Unit, err: (ProbeError) -> Unit) = ok(0)
-    override fun select(area: String, number: Int, onFailed: (ProbeError) -> Unit) {
+    override fun select(area: String, number: Int, motionKey: String, dispatch: Dispatch, onFailed: (ProbeError) -> Unit) {
         if (throwOnSelect) throw IllegalStateException("binder gone")
-        selects += area to number
-        failures += onFailed
+        val run = {
+            if (dispatch.now()) {
+                motionKeys += motionKey
+                selects += area to number
+                failures += onFailed
+            }
+        }
+        if (holdDispatch) queued += run else run()
     }
     override fun stop(axis: SeatAxis, area: String, ok: () -> Unit, err: (ProbeError) -> Unit) {
         stops++
-        ok()
+        if (holdStops) stopAnswers += ok to err else ok()
+    }
+    override fun endMotion(motionKey: String) {
+        motionsEnded += motionKey
     }
 }
 
@@ -106,8 +126,14 @@ class SeatPresetBenchTest {
         b.confirm("VHAL select value 2 + SDK onResult true; all areas moves 0, actuator 0")
         assertEquals(PresetStage.CONFIRMED, job("job-1").stage)
         assertEquals("VHAL select value 2 + SDK onResult true; all areas moves 0, actuator 0", job("job-1").basis)
-        assertNull(b.busyReason())
         assertTrue(b.state.message.startsWith("운영자 확인 #job-1")) // no stale refusal left on screen
+        // The confirmation is not a STOP answer: the first select's motion stays reserved until a STOP-all answers.
+        assertEquals("시트 프리셋 이동의 STOP 응답 전이에요", b.busyReason())
+        b.select(1)
+        assertEquals(1, port.selects.size)
+        b.stopAll()
+        assertEquals(listOf("select-1-job-1"), port.motionsEnded)
+        assertNull(b.busyReason())
         b.select(1)
         assertEquals(listOf("ROW_1_LEFT" to 2, "ROW_1_LEFT" to 1), port.selects)
     }
@@ -129,11 +155,12 @@ class SeatPresetBenchTest {
     fun `a late onFailed to a closed screen writes only its own job and keeps the newer screen's job`() {
         val old = bench()
         old.select(2)
-        old.close()
+        old.close() // its select entered the SDK: a clean-up STOP-all, whose answers release that motion
         old.select(1) // a closed screen sends nothing
         old.stopAll()
         assertEquals(1, port.selects.size)
-        assertEquals(0, port.stops)
+        assertEquals(SeatAxis.entries.size, port.stops)
+        assertEquals(listOf("select-1-job-1"), port.motionsEnded)
 
         val now = bench()
         now.closeObservation()
@@ -170,5 +197,74 @@ class SeatPresetBenchTest {
         assertNotNull(b.busyReason())
         b.stopAll() // the emergency STOP is never held
         assertEquals(SeatAxis.entries.size, port.stops)
+    }
+
+
+    // --- STEP 17: commands wait in the SDK lane; the gate decides right before the SDK entry ---
+
+    @Test
+    fun `queue - parking lost or a STOP-all while the select waits refuses it, its job goes and nothing is released`() {
+        val b = bench()
+        port.holdDispatch = true
+        b.select(2)
+        assertEquals(PresetStage.REQUESTED, store.jobs.single().stage)
+        parking = ParkingState(GearState.NOT_PARK, false)
+        port.runQueued()
+        assertTrue(port.selects.isEmpty())
+        assertTrue(store.jobs.isEmpty())
+
+        parking = ParkingState(GearState.PARK, false)
+        b.select(2)
+        b.stopAll()
+        port.runQueued()
+        assertTrue(port.selects.isEmpty())
+        assertTrue(store.jobs.isEmpty())
+        assertEquals(SeatAxis.entries.size, port.stops) // the explicit STOP still goes
+        assertTrue(port.motionsEnded.isEmpty())
+        assertNull(b.busyReason())
+    }
+
+    @Test
+    fun `queue - hiding, parking lost or an open door STOP an entered select's motion, and nothing else`() {
+        val idle = bench(MemoryPresetStore())
+        idle.onHidden()
+        idle.onParking(ParkingState(GearState.NOT_PARK, false))
+        idle.onDoor(DoorStatus.CHECKING)
+        assertEquals(0, port.stops)
+
+        val hidden = bench(MemoryPresetStore())
+        hidden.select(2)
+        hidden.onHidden()
+        assertEquals(SeatAxis.entries.size, port.stops)
+        val parked = bench(MemoryPresetStore())
+        parked.select(2)
+        parked.onParking(ParkingState(GearState.NOT_PARK, false))
+        assertEquals(2 * SeatAxis.entries.size, port.stops)
+        val opened = bench(MemoryPresetStore())
+        opened.select(2)
+        opened.onDoor(DoorStatus.OPEN)
+        assertEquals(3 * SeatAxis.entries.size, port.stops)
+        assertEquals(port.motionKeys, port.motionsEnded) // each released by its own STOP answers
+        assertEquals(3, port.motionKeys.toSet().size)
+    }
+
+    @Test
+    fun `queue - a failed STOP axis keeps the motion and blocks, a second STOP-all while answers are due is said, not queued`() {
+        val b = bench()
+        b.select(2)
+        port.holdStops = true
+        b.stopAll()
+        b.stopAll()
+        assertEquals(SeatAxis.entries.size, port.stops)
+        assertTrue(b.state.message.contains("응답을 기다리고"))
+        port.stopAnswers[0].second(ProbeError("VehicleException", "stop failed", null))
+        port.stopAnswers.drop(1).forEach { it.first() }
+        assertTrue(port.motionsEnded.isEmpty())
+        assertEquals("시트 프리셋 이동의 STOP 응답 전이에요", b.busyReason())
+
+        port.stopAnswers.clear()
+        b.stopAll()
+        port.stopAnswers.forEach { it.first() }
+        assertEquals(port.motionKeys, port.motionsEnded)
     }
 }

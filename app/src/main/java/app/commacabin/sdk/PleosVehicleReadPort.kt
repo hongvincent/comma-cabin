@@ -10,7 +10,6 @@ import ai.pleos.playground.vehicle.constant.area.SeatValue
 import ai.pleos.playground.vehicle.constant.unit.TemperatureUnit
 import ai.pleos.playground.vehicle.listener.DoorPositionListener
 import ai.pleos.playground.vehicle.listener.SeatBackrestAnglePositionListener
-import android.os.Handler
 import app.commacabin.probe.Access
 import app.commacabin.probe.ProbeError
 import app.commacabin.support.AreaBound
@@ -21,16 +20,17 @@ import java.util.Locale
 
 /**
  * Read-only Pleos Vehicle SDK calls for the support diagnostic: capability, current value and
- * door/seat subscriptions. It never calls a set/move API. Callbacks are re-posted to [main].
+ * door/seat subscriptions. It never calls a set/move API. Every SDK entry runs on [lane]'s worker, never on the
+ * main thread; callbacks are posted to the main thread. [owner] is the lane owner [SdkLane.close] cancels.
  */
-class PleosVehicleReadPort(private val vehicle: Vehicle, private val main: Handler) : VehicleReadPort {
+class PleosVehicleReadPort(private val vehicle: Vehicle, private val lane: SdkLane, private val owner: Any) : VehicleReadPort {
 
     override fun capability(feature: Feature, ok: (CapabilityResult) -> Unit, err: (ProbeError) -> Unit) {
-        val fail: (Exception) -> Unit = { e -> main.post { err(e.toProbeError()) } }
+        val fail: (Exception) -> Unit = { e -> lane.post { err(e.toProbeError()) } }
         fun done(config: CapabilityConfig, areas: List<AreaBound>, extra: String? = null) {
-            main.post { ok(CapabilityResult(config.accessType.toAccess(), areas, extra)) }
+            lane.post { ok(CapabilityResult(config.accessType.toAccess(), areas, extra)) }
         }
-        call(err) {
+        lane.readCall(owner, "capability $feature", err) {
             when (feature) {
                 Feature.DOOR_POSITION -> vehicle.getDoor().checkDoorPositionCapabilities({ config, map ->
                     done(config, map.map { (a, b) -> AreaBound(key(a), b.minValue.toString(), b.maxValue.toString()) })
@@ -69,9 +69,9 @@ class PleosVehicleReadPort(private val vehicle: Vehicle, private val main: Handl
     }
 
     override fun current(feature: Feature, area: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit) {
-        val fail: (Exception) -> Unit = { e -> main.post { err(e.toProbeError()) } }
-        val value: (Any?) -> Unit = { v -> main.post { ok(v?.toString()) } }
-        call(err) {
+        val fail: (Exception) -> Unit = { e -> lane.post { err(e.toProbeError()) } }
+        val value: (Any?) -> Unit = { v -> lane.post { ok(v?.toString()) } }
+        lane.readCall(owner, "read $feature $area", err) {
             when (feature) {
                 Feature.DOOR_POSITION -> vehicle.getDoor().getCurrentDoorPosition(doorArea(area), value, fail)
                 Feature.SEAT_BACKREST_POSITION -> vehicle.getSeat().getCurrentSeatBackrestAnglePosition(seatArea(area), value, fail)
@@ -81,25 +81,36 @@ class PleosVehicleReadPort(private val vehicle: Vehicle, private val main: Handl
                 Feature.HVAC_FAN_SPEED -> vehicle.getHVAC().getHvacFanSpeed(seatArea(area), value, fail)
                 Feature.HVAC_TEMPERATURE -> vehicle.getHVAC().getHvacTemperature(seatArea(area), TemperatureUnit.CELSIUS, value, fail)
                 Feature.AMBIENT_COLOR -> vehicle.getLight().getAmbientLightBrightnessColor(seatArea(area), { v ->
-                    main.post { ok(v?.let { String.format(Locale.ROOT, "0x%08X (raw %d)", it, it) }) }
+                    lane.post { ok(v?.let { String.format(Locale.ROOT, "0x%08X (raw %d)", it, it) }) }
                 }, fail)
-                Feature.SEAT_BACKREST_MOVE -> main.post { err(ProbeError("not-read", "이동 기능은 현재값을 조회하지 않음", null)) }
-                Feature.SEAT_MEMORY_SUPPORT -> main.post { err(ProbeError("not-read", "프리셋 기능은 현재값을 조회하지 않음", null)) }
+                Feature.SEAT_BACKREST_MOVE -> lane.post { err(ProbeError("not-read", "이동 기능은 현재값을 조회하지 않음", null)) }
+                Feature.SEAT_MEMORY_SUPPORT -> lane.post { err(ProbeError("not-read", "프리셋 기능은 현재값을 조회하지 않음", null)) }
             }
         }
     }
 
+    /**
+     * Registered and removed on the lane; the handle returns at once. A registration that did not happen (queue
+     * full, a throw) reaches [onError]. Null: this feature is not subscribed.
+     */
     override fun observe(feature: Feature, area: String, onUpdate: (String?) -> Unit, onError: (ProbeError) -> Unit): AutoCloseable? =
+        when (feature) {
+            Feature.DOOR_POSITION, Feature.SEAT_BACKREST_POSITION ->
+                lane.subscribe(owner, "listener $feature $area", { e -> e?.let(onError) }) { register(feature, area, onUpdate, onError) }
+            else -> null
+        }
+
+    private fun register(feature: Feature, area: String, onUpdate: (String?) -> Unit, onError: (ProbeError) -> Unit): AutoCloseable? =
         when (feature) {
             Feature.DOOR_POSITION -> {
                 val doorArea = doorArea(area)
                 val listener = object : DoorPositionListener {
                     override fun onPositionUpdated(pos: Int?) {
-                        main.post { onUpdate(pos?.toString()) }
+                        lane.post { onUpdate(pos?.toString()) }
                     }
 
                     override fun onFailed(e: Exception) {
-                        main.post { onError(e.toProbeError()) }
+                        lane.post { onError(e.toProbeError()) }
                     }
                 }
                 vehicle.getDoor().registerDoorPosition(doorArea, listener)
@@ -109,11 +120,11 @@ class PleosVehicleReadPort(private val vehicle: Vehicle, private val main: Handl
                 val seatArea = seatArea(area)
                 val listener = object : SeatBackrestAnglePositionListener {
                     override fun onSeatBackrestAnglePositionUpdated(position: Int?) {
-                        main.post { onUpdate(position?.toString()) }
+                        lane.post { onUpdate(position?.toString()) }
                     }
 
                     override fun onFailed(e: Exception) {
-                        main.post { onError(e.toProbeError()) }
+                        lane.post { onError(e.toProbeError()) }
                     }
                 }
                 vehicle.getSeat().registerSeatBackrestAnglePosition(seatArea, listener)
@@ -121,15 +132,6 @@ class PleosVehicleReadPort(private val vehicle: Vehicle, private val main: Handl
             }
             else -> null
         }
-
-    /** A synchronous throw is reported like an onFailed callback. */
-    private inline fun call(crossinline err: (ProbeError) -> Unit, block: () -> Unit) {
-        try {
-            block()
-        } catch (e: RuntimeException) {
-            main.post { err(e.toProbeError()) }
-        }
-    }
 
     private fun key(area: SeatArea) = area.values.map { it.name }.sorted().joinToString("+")
 

@@ -541,4 +541,21 @@ class AmbientProbeTest {
         p.startChange()
         assertEquals(listOf(60), light.sets)
     }
+
+
+    // --- STEP 17: the write waits in the SDK lane; the gate decides right before the SDK entry ---
+
+    @Test
+    fun `queue - parking lost while the write waits sends nothing and the record goes`() {
+        val p = probe()
+        light.holdDispatch = true
+        p.startChange()
+        assertEquals(Stage.APPLY_REQUESTED, store.stored!!.stage)
+        setParking(p, ParkingState(GearState.NOT_PARK, uxRestricted = false))
+        light.runQueued()
+        assertTrue(light.sets.isEmpty())
+        assertNull(store.stored)
+        assertNull(p.state.record)
+        assertFalse(p.state.busy)
+    }
 }

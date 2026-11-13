@@ -2,6 +2,7 @@ package app.commacabin.control
 
 import app.commacabin.probe.Access
 import app.commacabin.probe.Cancellable
+import app.commacabin.probe.Dispatch
 import app.commacabin.probe.ParkingState
 import app.commacabin.probe.ProbeError
 import app.commacabin.probe.RecordLease
@@ -74,7 +75,19 @@ class ControlBench(
     private var hidden = true
     private val alive: Boolean get() = !closed && lease.isHeld(leaseId)
     private var opSeq = 0
-    private val observers = mutableMapOf<ControlProp, AutoCloseable>()
+    /** A listener and what it proved: [registered] only once the registration call returned normally. */
+    private class Watch {
+        var handle: AutoCloseable? = null
+        var registered = false
+        /** The value a waiting command is based on; a listener value off it refuses that command at its gate. */
+        var basis: String? = null
+        var heard: String? = null
+    }
+    private val observers = mutableMapOf<ControlProp, Watch>()
+    /** Counts STOP requests: a move still waiting in the SDK lane when one comes is refused at its gate. */
+    private var stopSeq = 0
+    /** A motion whose STOP failed: the lane keeps it reserved, and no new move starts until a STOP answers. */
+    private var heldMotion: String? = null
     private val writeTimers = mutableMapOf<String, Cancellable>()
     private var seat: SeatRun? = null
     /** Jobs whose auto state was already restored once in this run; never repeated. */
@@ -140,15 +153,19 @@ class ControlBench(
         log("제어 검증 화면 보임: 새 작업은 버튼으로만 시작")
     }
 
-    /** Activity end: STOP a moving seat, then ignore every later callback. Records stay on disk as they are. */
+    /**
+     * Activity end: STOP a moving seat (or a motion whose STOP failed), then ignore every later callback and show
+     * nothing more. Records stay on disk as they are, except that a command that certainly never entered the SDK
+     * still takes its own record back (see [unsent]).
+     */
     fun close() {
         if (closed) return
-        if (seat != null) stopSeat("화면 종료")
+        if (seat != null || heldMotion != null) stopSeat("화면 종료")
         closed = true
         writeTimers.values.forEach { it.cancel() }
         writeTimers.clear()
         seat?.watchdog?.cancel()
-        observers.values.forEach { runCatching { it.close() } }
+        observers.values.forEach { w -> w.handle?.let { runCatching { it.close() } } }
         observers.clear()
     }
 
@@ -226,11 +243,10 @@ class ControlBench(
                         if (recordOf(prop) != null || state.pending.containsKey(prop)) return@relatedValues end(token, "같은 속성에 진행 중인 작업이 있어 쓰지 않아요")
                         val record = ControlRecord(newId(), prop, area, original, target, all, ControlStage.APPLY_REQUESTED, newId(), responseReceived = false)
                         if (!persist(state.records + record)) return@relatedValues end(token, "기록을 저장하지 못해 ${prop.label}을 바꾸지 않았어요(요청 안 함)")
-                        if (!stillValid(token)) return@relatedValues unsent(record, token, "명령 직전 조건이 바뀌어")
-                        note("기록 저장 후 적용 요청: ${describe(record)}")
-                        observe(prop, area)
-                        sendWrite(record, target)
-                        end(token, "${prop.label} 적용 요청을 보냈어요")
+                        note("기록 저장 후 적용 요청(SDK 차례 대기): ${describe(record)}")
+                        // Registered before the command (the lane keeps the order): a change while it waits refuses it.
+                        observe(prop, area, basis = original)
+                        sendWrite(record, target, token) { unsent(record, token, "명령 직전 조건이 바뀌어") }
                     }
                 }
             }
@@ -256,13 +272,12 @@ class ControlBench(
                 if (current?.jobId != r.jobId || state.pending.containsKey(prop) || !parking().parked) return@precondition end(token, "명령 직전 조건이 바뀌어 복원하지 않아요")
                 val next = current.copy(stage = ControlStage.RESTORE_REQUESTED, requestId = newId(), responseReceived = false, lastEcho = null)
                 if (!persist(replace(next))) return@precondition end(token, "기록을 갱신하지 못해 복원 명령을 보내지 않았어요")
-                if (!stillValid(token)) {
-                    persist(replace(current))
-                    return@precondition end(token, "명령 직전 조건이 바뀌어 복원 명령을 보내지 않았어요(기록은 이전 단계로)")
+                note("기록 갱신 후 복원 요청(SDK 차례 대기): ${describe(next)}")
+                observe(prop, area)
+                sendWrite(next, next.original, token) {
+                    if (state.records.firstOrNull { it.jobId == next.jobId }?.requestId == next.requestId) persist(replace(current), afterClose = true)
+                    end(token, "명령 직전 조건이 바뀌어 복원 명령을 보내지 않았어요(기록은 이전 단계로)")
                 }
-                note("기록 갱신 후 복원 요청: ${describe(next)}")
-                sendWrite(next, next.original)
-                end(token, "${prop.label} 복원 요청을 보냈어요")
             }
         }
     }
@@ -296,14 +311,14 @@ class ControlBench(
             ask<String?>(token, "등받이 현재 위치", { ok, err -> port.read(ControlProp.SEAT_BACKREST, area, ok, err) }) { text ->
                 val position = text?.let { ControlValues.parse(ControlProp.SEAT_BACKREST, it) as Int? } ?: return@ask end(token, "등받이 위치를 읽지 못해 움직이지 않아요($text)")
                 if (position !in range) return@ask end(token, "등받이 위치 ${position}이 범위 $range 밖이라 움직이지 않아요")
-                if (!observe(ControlProp.SEAT_BACKREST, area)) return@ask end(token, "위치 리스너를 등록하지 못해 움직이지 않아요")
+                // Registered before the move (the lane keeps the order); the move's gate needs the registration confirmed.
+                if (!observe(ControlProp.SEAT_BACKREST, area, basis = position.toString())) return@ask end(token, "위치 리스너를 등록하지 못해 움직이지 않아요")
                 seatSafe()?.let { return@ask end(token, it) }
                 val record = ControlRecord(newId(), ControlProp.SEAT_BACKREST, area, position.toString(), direction.name, emptyMap(), ControlStage.APPLY_REQUESTED, newId(), responseReceived = false)
                 if (!persist(state.records + record)) return@ask end(token, "기록을 저장하지 못해 등받이를 움직이지 않았어요(요청 안 함)")
-                if (!stillValid(token) || seatSafe() != null) return@ask unsent(record, token, "명령 직전 안전 조건이 바뀌어")
-                note("기록 저장 후 등받이 ${direction.name}: ${describe(record)}")
-                sendMove(SeatRun(record.jobId, restore = false, direction = direction, original = position, start = position, startedAt = clock(), range = range), record.requestId)
-                end(token, "등받이 ${direction.name} 요청을 보냈어요")
+                note("기록 저장 후 등받이 ${direction.name}(SDK 차례 대기): ${describe(record)}")
+                val run = SeatRun(record.jobId, restore = false, direction = direction, original = position, start = position, startedAt = clock(), range = range)
+                sendMove(run, record.requestId, token, "등받이 ${direction.name} 요청을 보냈어요") { unsent(record, token, "명령 직전 안전 조건이 바뀌어") }
             }
         }
     }
@@ -333,23 +348,30 @@ class ControlBench(
                 if (current?.jobId != r.jobId) return@ask end(token, "기록이 바뀌어 움직이지 않아요")
                 val range = seatRange(bounds) ?: return@ask end(token, "등받이 위치 범위를 해석할 수 없어 움직이지 않아요")
                 if (now !in range) return@ask end(token, "등받이 위치 ${now}이 범위 $range 밖이라 움직이지 않아요")
-                if (!observe(ControlProp.SEAT_BACKREST, area)) return@ask end(token, "위치 리스너를 등록하지 못해 움직이지 않아요")
+                if (!observe(ControlProp.SEAT_BACKREST, area, basis = now.toString())) return@ask end(token, "위치 리스너를 등록하지 못해 움직이지 않아요")
                 val next = current.copy(stage = ControlStage.RESTORE_REQUESTED, requestId = newId(), responseReceived = false, lastEcho = null)
                 if (!persist(replace(next))) return@ask end(token, "기록을 갱신하지 못해 등받이를 움직이지 않았어요")
-                if (!stillValid(token) || seatSafe() != null) {
-                    persist(replace(current))
-                    return@ask end(token, "명령 직전 안전 조건이 바뀌어 움직이지 않았어요(기록은 이전 단계로)")
+                note("기록 갱신 후 등받이 복원 ${direction.name}(SDK 차례 대기): ${now} → $original")
+                val run = SeatRun(r.jobId, restore = true, direction = direction, original = original, start = now, startedAt = clock(), range = range)
+                sendMove(run, next.requestId, token, "등받이 복원 요청을 보냈어요") {
+                    if (state.records.firstOrNull { it.jobId == next.jobId }?.requestId == next.requestId) persist(replace(current), afterClose = true)
+                    end(token, "명령 직전 안전 조건이 바뀌어 움직이지 않았어요(기록은 이전 단계로)")
                 }
-                note("기록 갱신 후 등받이 복원 ${direction.name}: ${now} → $original")
-                sendMove(SeatRun(r.jobId, restore = true, direction = direction, original = original, start = now, startedAt = clock(), range = range), next.requestId)
-                end(token, "등받이 복원 요청을 보냈어요")
             }
         }
     }
 
-    /** STOP at once, without the pre-write checks (product-spec 6-1 exception). */
+    /**
+     * STOP at once, without the pre-write checks (product-spec 6-1 exception). It goes before everything waiting
+     * in the SDK lane, and a move still waiting there is refused at its gate. While an earlier STOP has not
+     * answered, no second one is queued (it would get no answer); that is said, not dropped silently.
+     */
     fun stopSeat(reason: String) {
-        if (closed || state.stopPending != null) return
+        if (closed) return
+        if (state.stopPending != null) return note("등받이 STOP($reason): 먼저 보낸 STOP이 아직 응답 전이라 그 응답을 기다려요")
+        stopSeq++
+        // The motion this STOP answers for: the move that entered (or last failed to stop).
+        val key = seat?.moveId?.takeIf { it.isNotEmpty() } ?: heldMotion
         val run = seat?.takeIf { it.stopId == null }
         run?.watchdog?.cancel()
         run?.poll?.cancel()
@@ -368,20 +390,55 @@ class ControlBench(
                 update { copy(stopPending = stopPending?.copy(timedOut = true)) }
             }
         }
-        port.move(DRIVER, Move.STOP, { echo -> onStopDone(id, "onComplete($echo)") }, { e -> onStopDone(id, "onFailed(${e.text()})") })
+        port.move(DRIVER, Move.STOP, key ?: "", Dispatch.NONE, { echo -> onStopDone(id, key, "onComplete($echo)") }, { e -> onStopDone(id, key, "onFailed(${e.text()})") })
     }
 
     // --- writes and callbacks ---
 
-    private fun sendWrite(record: ControlRecord, value: String) {
+    /**
+     * [record] is saved; the write waits in the SDK lane while the preparation [token] stays open. Right before the
+     * SDK entry, on main: [commandGate]. The timeout starts then and the preparation ends. [notSent]: it never
+     * entered; this request's tracking is undone first, the caller handles its record.
+     */
+    private fun sendWrite(record: ControlRecord, value: String, token: Int, notSent: () -> Unit) {
         val reqId = record.requestId
         val label = if (record.stage == ControlStage.RESTORE_REQUESTED) "복원" else "적용"
-        update { copy(pending = pending + (record.prop to PendingRequest(record.jobId, reqId, label))) }
-        writeTimers[reqId] = scheduler.schedule(CONTROL_WRITE_TIMEOUT_MS) { onWriteTimeout(record.prop, reqId) }
-        note("${record.prop.label} $label 요청 #${reqId.take(8)} payload=$value")
-        port.write(record.prop, record.area, value, { echo -> onWriteDone(record.jobId, reqId, "onComplete($echo)", ok = true) }, { e ->
+        val dispatch = Dispatch(
+            gate = { commandGate(token, record.prop, record.jobId, reqId) },
+            onStart = {
+                observers[record.prop]?.basis = null
+                update { copy(pending = pending + (record.prop to PendingRequest(record.jobId, reqId, label))) }
+                writeTimers[reqId] = scheduler.schedule(CONTROL_WRITE_TIMEOUT_MS) { onWriteTimeout(record.prop, reqId) }
+                note("${record.prop.label} $label 요청 #${reqId.take(8)} payload=$value")
+                end(token, "${record.prop.label} $label 요청을 보냈어요")
+            },
+            onNotSent = { why ->
+                observers[record.prop]?.basis = null
+                writeTimers.remove(reqId)?.cancel()
+                if (state.pending[record.prop]?.requestId == reqId) update { copy(pending = pending - record.prop) }
+                note("${record.prop.label} $label 요청 #${reqId.take(8)} 보내지 않음: $why")
+                notSent()
+            },
+        )
+        port.write(record.prop, record.area, value, dispatch, { echo -> onWriteDone(record.jobId, reqId, "onComplete($echo)", ok = true) }, { e ->
             onWriteDone(record.jobId, reqId, "onFailed(${e.text()})", ok = false)
         })
+    }
+
+    /**
+     * Right before a command enters the SDK: the preparation is still current (shown, parked, files writable, no
+     * product lighting), the record is still this request, and the property's listener is registered with no value
+     * off the one the command is based on.
+     */
+    private fun commandGate(token: Int, prop: ControlProp, jobId: String, requestId: String): String? {
+        val w = observers[prop]
+        return when {
+            !stillValid(token) -> "명령 직전 조건이 바뀌었어요"
+            state.records.firstOrNull { it.jobId == jobId }?.requestId != requestId -> "기록이 바뀌었어요"
+            w == null || !w.registered -> "${prop.label} 리스너 등록을 확인하지 못했어요"
+            w.heard != null -> "명령을 기다리는 동안 ${prop.label} 값이 ${w.heard}(으)로 바뀌었어요"
+            else -> null
+        }
     }
 
     /** setHvacAuto back to the recorded value, as a tracked request of the same job (pre-write checks again). */
@@ -411,10 +468,32 @@ class ControlBench(
         if (!persist(replace(next))) return
         val value = r.related.getValue(autoKey)
         val reqId = next.requestId
-        update { copy(pending = pending + (r.prop to PendingRequest(r.jobId, reqId, "자동 상태 복원"))) }
-        writeTimers[reqId] = scheduler.schedule(CONTROL_WRITE_TIMEOUT_MS) { onWriteTimeout(r.prop, reqId) }
-        note("HVAC_AUTO $area 복원 요청 #${reqId.take(8)} payload=$value")
-        port.writeSide(SideState.HVAC_AUTO, area, value, { echo -> onWriteDone(r.jobId, reqId, "onComplete($echo)", ok = true) }, { e ->
+        val dispatch = Dispatch(
+            gate = {
+                when {
+                    !alive || hidden || !parking().parked -> "주차 조건 없음 또는 화면 이탈"
+                    state.storageFault != null -> "기록 저장 오류"
+                    externalBlock() != null -> "제품 휴식 무드등 작업 중"
+                    state.records.firstOrNull { it.jobId == r.jobId }?.requestId != reqId -> "기록이 바뀌었어요"
+                    else -> null
+                }
+            },
+            onStart = {
+                update { copy(pending = pending + (r.prop to PendingRequest(r.jobId, reqId, "자동 상태 복원"))) }
+                writeTimers[reqId] = scheduler.schedule(CONTROL_WRITE_TIMEOUT_MS) { onWriteTimeout(r.prop, reqId) }
+                note("HVAC_AUTO $area 복원 요청 #${reqId.take(8)} payload=$value")
+            },
+            onNotSent = { why ->
+                writeTimers.remove(reqId)?.cancel()
+                if (state.pending[r.prop]?.requestId == reqId) update { copy(pending = pending - r.prop) }
+                // Certainly not sent: held like a refused auto restore (this request only).
+                if (state.records.firstOrNull { it.jobId == r.jobId }?.requestId == reqId) {
+                    persist(replace(r.copy(stage = ControlStage.RESTORE_FAILED, note = "자동 상태 복원 보류: 보내지 않음($why)")), afterClose = true)
+                }
+                note("${r.prop.label} 자동 상태 복원 보내지 않음: $why. 기록 유지")
+            },
+        )
+        port.writeSide(SideState.HVAC_AUTO, area, value, dispatch, { echo -> onWriteDone(r.jobId, reqId, "onComplete($echo)", ok = true) }, { e ->
             onWriteDone(r.jobId, reqId, "onFailed(${e.text()})", ok = false)
         })
     }
@@ -474,14 +553,42 @@ class ControlBench(
         }
     }
 
-    private fun sendMove(run: SeatRun, requestId: String) {
-        seat = run
-        run.moveId = requestId
-        update { copy(seatMoving = true, pending = pending + (ControlProp.SEAT_BACKREST to PendingRequest(run.jobId, requestId, run.direction.name))) }
-        run.watchdog = scheduler.schedule(SEAT_WATCHDOG_MS) { if (seat === run) stopSeat("watchdog ${SEAT_WATCHDOG_MS}ms") }
-        pollSeat(run)
-        note("등받이 ${run.direction.name} 요청 #${requestId.take(8)} (시작 위치 ${run.start}, 원래 ${run.original})")
-        port.move(DRIVER, run.direction, { echo -> onMoveDone(requestId, "onComplete($echo)", ok = true) }, { e -> onMoveDone(requestId, "onFailed(${e.text()})", ok = false) })
+    /**
+     * The move waits in the SDK lane while the preparation [token] stays open. Its gate: no STOP since it was
+     * queued, [commandGate] (position listener registered, no position change meanwhile) and the seat safety. On
+     * entering it reserves the lane under its own request id until a STOP of it answers ([onStopDone]). Polling
+     * reads wait in the lane during the motion, so the listener and the watchdog bound it.
+     */
+    private fun sendMove(run: SeatRun, requestId: String, token: Int, sent: String, notSent: () -> Unit) {
+        val stops = stopSeq
+        val dispatch = Dispatch(
+            gate = {
+                if (stopSeq != stops) "STOP 요청이 있었어요" else commandGate(token, ControlProp.SEAT_BACKREST, run.jobId, requestId) ?: seatSafe()
+            },
+            onStart = {
+                observers[ControlProp.SEAT_BACKREST]?.basis = null
+                seat = run
+                run.moveId = requestId
+                update { copy(seatMoving = true, pending = pending + (ControlProp.SEAT_BACKREST to PendingRequest(run.jobId, requestId, run.direction.name))) }
+                run.watchdog = scheduler.schedule(SEAT_WATCHDOG_MS) { if (seat === run) stopSeat("watchdog ${SEAT_WATCHDOG_MS}ms") }
+                pollSeat(run)
+                note("등받이 ${run.direction.name} 요청 #${requestId.take(8)} (시작 위치 ${run.start}, 원래 ${run.original})")
+                end(token, sent)
+            },
+            onNotSent = { why ->
+                observers[ControlProp.SEAT_BACKREST]?.basis = null
+                if (seat === run) {
+                    // Started here but never entered the SDK: no motion to wait for.
+                    seat = null
+                    run.watchdog?.cancel()
+                    run.poll?.cancel()
+                    update { copy(seatMoving = false, pending = pending - ControlProp.SEAT_BACKREST) }
+                }
+                note("등받이 ${run.direction.name} 요청 #${requestId.take(8)} 보내지 않음: $why")
+                notSent()
+            },
+        )
+        port.move(DRIVER, run.direction, requestId, dispatch, { echo -> onMoveDone(requestId, "onComplete($echo)", ok = true) }, { e -> onMoveDone(requestId, "onFailed(${e.text()})", ok = false) })
     }
 
     private fun onMoveDone(requestId: String, result: String, ok: Boolean) {
@@ -494,7 +601,20 @@ class ControlBench(
         settleIfDone(run)
     }
 
-    private fun onStopDone(id: String, result: String) {
+    /**
+     * [key]: the motion this STOP was sent for. Its answer releases that motion's lane reservation (an old STOP's
+     * late answer cannot release a newer motion); a failed STOP keeps it and blocks new moves. Also after close,
+     * or every SDK call of the app would keep waiting.
+     */
+    private fun onStopDone(id: String, key: String?, result: String) {
+        if (key != null) {
+            if (result.startsWith("onComplete")) {
+                port.endMotion(key)
+                if (heldMotion == key) heldMotion = null
+            } else {
+                heldMotion = key
+            }
+        }
         if (!alive) return log("ignored late STOP callback after close $result")
         writeTimers.remove(id)?.cancel()
         if (state.stopPending?.requestId == id) update { copy(stopPending = null) }
@@ -543,16 +663,39 @@ class ControlBench(
 
     // --- listeners ---
 
-    private fun observe(prop: ControlProp, area: String): Boolean {
-        if (observers.containsKey(prop)) return true
+    /**
+     * Starts [prop]'s listener once and sets the value a waiting command is based on ([basis]). The handle proves
+     * nothing: only a normal return of the registration call ([Watch.registered]) lets a command through its gate.
+     * False only when the registration already failed here.
+     */
+    private fun observe(prop: ControlProp, area: String, basis: String? = null): Boolean {
+        observers[prop]?.let { w ->
+            w.basis = basis
+            w.heard = null
+            return true
+        }
+        val w = Watch()
+        w.basis = basis
+        observers[prop] = w
         return try {
-            observers[prop] = port.observe(prop, area, { value -> onUpdate(prop, area, value) }, { e ->
+            w.handle = port.observe(prop, area, { value -> onUpdate(prop, area, value) }, { e ->
                 if (!alive) return@observe
                 note("${prop.label} 리스너 오류: ${e.text()}")
+                // It observes nothing reliable now: removed, so a waiting command is refused at its gate.
+                if (observers[prop] === w) closeObserver(prop)
                 if (prop == ControlProp.SEAT_BACKREST && seat != null) stopSeat("위치 리스너 오류")
+            }, { e ->
+                if (observers[prop] !== w) return@observe
+                if (e == null) {
+                    w.registered = true
+                } else {
+                    observers.remove(prop)
+                    if (alive) note("${prop.label} 리스너 등록 실패: ${e.text()}")
+                }
             })
-            true
+            observers[prop] === w
         } catch (e: RuntimeException) {
+            observers.remove(prop)
             note("${prop.label} 리스너 등록 실패: ${e.javaClass.name}")
             false
         }
@@ -619,17 +762,21 @@ class ControlBench(
 
     /** A record saved for a command that was certainly not sent: remove it (product-spec 6-1 "요청 안 함"). */
     private fun unsent(record: ControlRecord, token: Int, why: String) {
-        closeObserver(record.prop)
-        if (persist(state.records.filter { it.jobId != record.jobId })) note("$why 명령을 보내지 않았어요. 보내지 않은 기록이라 지웠어요: ${describe(record)}")
+        if (state.records.any { it.jobId == record.jobId && it.requestId == record.requestId }) {
+            closeObserver(record.prop)
+            if (persist(state.records.filter { it.jobId != record.jobId }, afterClose = true)) note("$why 명령을 보내지 않았어요. 보내지 않은 기록이라 지웠어요: ${describe(record)}")
+        }
         end(token, "$why ${record.prop.label} 명령을 보내지 않았어요(요청 안 함)")
     }
 
     private fun closeObserver(prop: ControlProp) {
-        observers.remove(prop)?.let { runCatching { it.close() } }
+        observers.remove(prop)?.handle?.let { runCatching { it.close() } }
     }
 
     private fun onUpdate(prop: ControlProp, area: String, value: String?) {
         if (!alive) return
+        // A command of ours waiting in the lane: a value off its basis refuses it at the gate.
+        observers[prop]?.let { w -> w.basis?.let { if (!ControlValues.same(prop, value, it)) w.heard = value ?: "null" } }
         update { copy(live = live + ("${prop.name} $area" to (value ?: "null"))) }
         if (prop == ControlProp.SEAT_BACKREST && seat != null) return onSeatPosition(value, "알림")
         note("${prop.label} 리스너 $value")
@@ -761,6 +908,7 @@ class ControlBench(
         !parking().parked -> "주차(P + 주행 제한 없음)가 확인되지 않아 등받이를 움직이지 않아요"
         door() != DoorStatus.CLOSED -> "조수석 문 닫힘이 확인되지 않아 등받이를 움직이지 않아요(${door()})"
         state.pending.containsKey(ControlProp.SEAT_BACKREST) || state.stopPending != null -> "등받이에 응답을 기다리는 요청이 있어요"
+        heldMotion != null -> "STOP 응답을 받지 못해 등받이 이동 예약이 남아 있어요. [STOP]을 다시 눌러 주세요"
         else -> seatBlock()?.let { "등받이를 움직이지 않아요: $it" }
     }
 
@@ -852,11 +1000,12 @@ class ControlBench(
     /**
      * Saves the list; a failure sets the storage fault, which blocks every later write and delete.
      * A closed bench or one that lost the lease never touches the file: requests it already sent are left to
-     * the current owner, which reloads the record. After a storage fault a record may still be updated with an
-     * answer (attempted), but no record is added or deleted.
+     * the current owner, which reloads the record. Only [afterClose] (a command that certainly never entered the
+     * SDK taking its own record back) may still write after close, while no newer bench holds the file. After a
+     * storage fault a record may still be updated with an answer (attempted), but no record is added or deleted.
      */
-    private fun persist(next: List<ControlRecord>): Boolean {
-        if (!alive) {
+    private fun persist(next: List<ControlRecord>, afterClose: Boolean = false): Boolean {
+        if (!alive && !(afterClose && lease.isHeld(leaseId))) {
             log("ignored record change after close or lease loss")
             return false
         }
@@ -890,8 +1039,9 @@ class ControlBench(
         update { copy(log = (log + line).takeLast(LOG_LIMIT)) }
     }
 
+    /** After close the state still follows (records) but nothing is shown. */
     private inline fun update(change: ControlUiState.() -> ControlUiState) {
         state = state.change()
-        onState(state)
+        if (!closed) onState(state)
     }
 }

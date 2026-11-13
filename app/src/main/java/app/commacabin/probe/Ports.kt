@@ -21,8 +21,13 @@ interface LightPort {
     fun checkBrightnessCapabilities(onResult: (BrightnessCapability) -> Unit, onError: (ProbeError) -> Unit)
     fun getSwitch(area: AreaId, onResult: (SwitchState?) -> Unit, onError: (ProbeError) -> Unit)
     fun getBrightness(area: AreaId, onResult: (Int?) -> Unit, onError: (ProbeError) -> Unit)
-    fun setBrightness(area: AreaId, value: Int, onComplete: (Int?) -> Unit, onError: (ProbeError) -> Unit)
-    fun observeBrightness(area: AreaId, onUpdate: (Int?) -> Unit): AutoCloseable
+    /** Gated by [dispatch] right before the SDK entry. */
+    fun setBrightness(area: AreaId, value: Int, dispatch: Dispatch, onComplete: (Int?) -> Unit, onError: (ProbeError) -> Unit)
+    /**
+     * The handle is no proof of a registration. [onListening] (main): null once the registration call returned
+     * normally; an error when it did not happen or the listener failed later (it then observes nothing reliable).
+     */
+    fun observeBrightness(area: AreaId, onListening: (ProbeError?) -> Unit, onUpdate: (Int?) -> Unit): AutoCloseable
 }
 
 enum class GearState { UNKNOWN, PARK, NOT_PARK }

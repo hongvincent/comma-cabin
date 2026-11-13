@@ -120,7 +120,7 @@ class RestFlow(
     private val saveSettings: (RestSettings) -> Unit,
     private val audio: RestAudioPort,
     private val log: (String) -> Unit = {},
-    /** A debug seat tool's request not settled: no rest starts meanwhile. */
+    /** A debug seat tool's request not settled, or a seat motion holding the SDK lane: no rest starts meanwhile. */
     private val startBlock: () -> String? = { null },
 ) {
     var state: RestState

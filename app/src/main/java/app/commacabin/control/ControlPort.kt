@@ -1,6 +1,7 @@
 package app.commacabin.control
 
 import app.commacabin.probe.Access
+import app.commacabin.probe.Dispatch
 import app.commacabin.probe.ProbeError
 import app.commacabin.support.CapabilityResult
 
@@ -27,13 +28,23 @@ interface ControlPort {
     fun readSide(state: SideState, area: String, ok: (String?) -> Unit, err: (ProbeError) -> Unit)
 
     /** Not for the seat. [ok] receives the SDK's onComplete value as text (an echo, not a reading). */
-    fun write(prop: ControlProp, area: String, value: String, ok: (echo: String?) -> Unit, err: (ProbeError) -> Unit)
+    fun write(prop: ControlProp, area: String, value: String, dispatch: Dispatch, ok: (echo: String?) -> Unit, err: (ProbeError) -> Unit)
 
     /** setHvacAuto only (restoring the auto state); the app never writes HVAC power, dual or the light switch. */
-    fun writeSide(state: SideState, area: String, value: String, ok: (echo: String?) -> Unit, err: (ProbeError) -> Unit)
+    fun writeSide(state: SideState, area: String, value: String, dispatch: Dispatch, ok: (echo: String?) -> Unit, err: (ProbeError) -> Unit)
 
-    /** moveSeatBackrestAngle. [ok] receives the onComplete MoveControl as text. */
-    fun move(area: String, control: Move, ok: (echo: String?) -> Unit, err: (ProbeError) -> Unit)
+    /**
+     * moveSeatBackrestAngle. [ok] receives the onComplete MoveControl as text. A move is gated by [dispatch] and
+     * starts the motion reservation [motionKey]; STOP is never gated ([dispatch] ignored) and goes first.
+     */
+    fun move(area: String, control: Move, motionKey: String, dispatch: Dispatch, ok: (echo: String?) -> Unit, err: (ProbeError) -> Unit)
 
-    fun observe(prop: ControlProp, area: String, onUpdate: (String?) -> Unit, onError: (ProbeError) -> Unit): AutoCloseable
+    /** The motion [motionKey] is known to be stopped (its STOP answered): other SDK calls may run again. */
+    fun endMotion(motionKey: String) {}
+
+    /**
+     * The handle returns at once and is no proof of a registration. [onRegistered] (main): null once the SDK
+     * registration call returned normally, else why it was not registered. [onError]: the listener's own errors.
+     */
+    fun observe(prop: ControlProp, area: String, onUpdate: (String?) -> Unit, onError: (ProbeError) -> Unit, onRegistered: (ProbeError?) -> Unit): AutoCloseable
 }

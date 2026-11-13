@@ -4,6 +4,7 @@ import app.commacabin.control.ControlPort
 import app.commacabin.control.ControlProp
 import app.commacabin.control.SideState
 import app.commacabin.probe.Access
+import app.commacabin.probe.Dispatch
 import app.commacabin.probe.ProbeError
 
 /** Shared climate states. Read only, except AUTO which the app writes only to restore the original. */
@@ -15,10 +16,14 @@ interface ClimatePort {
     fun sideAreas(side: Side, ok: (Access, List<String>) -> Unit, err: (ProbeError) -> Unit)
     fun read(prop: ClimateProp, area: String, ok: (Float?) -> Unit, err: (ProbeError) -> Unit)
     fun readSide(side: Side, area: String, ok: (Boolean?) -> Unit, err: (ProbeError) -> Unit)
-    fun write(prop: ClimateProp, area: String, value: Float, ok: (Float?) -> Unit, err: (ProbeError) -> Unit)
-    fun writeAuto(area: String, value: Boolean, ok: (Boolean?) -> Unit, err: (ProbeError) -> Unit)
-    /** Listener errors are dropped: they are not user changes. */
-    fun observe(prop: ClimateProp, area: String, onUpdate: (Float?) -> Unit): AutoCloseable
+    fun write(prop: ClimateProp, area: String, value: Float, dispatch: Dispatch, ok: (Float?) -> Unit, err: (ProbeError) -> Unit)
+    fun writeAuto(area: String, value: Boolean, dispatch: Dispatch, ok: (Boolean?) -> Unit, err: (ProbeError) -> Unit)
+    /**
+     * The handle is no proof of a registration. [onListening] (main): null once the SDK registration call returned
+     * normally; an error when it did not happen or the listener failed later. A listener error is not a user change,
+     * but the listener then observes nothing reliable.
+     */
+    fun observe(prop: ClimateProp, area: String, onListening: (ProbeError?) -> Unit, onUpdate: (Float?) -> Unit): AutoCloseable
 }
 
 /** The existing public-SDK adapter [control] (getHvac…/setHvacFanSpeed/setHvacTemperature/setHvacAuto). */
@@ -43,16 +48,17 @@ class SdkClimatePort(private val control: ControlPort) : ClimatePort {
     override fun readSide(side: Side, area: String, ok: (Boolean?) -> Unit, err: (ProbeError) -> Unit) =
         control.readSide(side.control, area, { v -> ok(v?.toBooleanStrictOrNull()) }, err)
 
-    override fun write(prop: ClimateProp, area: String, value: Float, ok: (Float?) -> Unit, err: (ProbeError) -> Unit) {
-        val text = ClimateValues.payload(prop, value) ?: return err(ProbeError("InvalidPayload", "not a valid ${prop.name} value: $value", null))
-        control.write(controlProp(prop), area, text, { v -> ok(number(v)) }, err)
+    override fun write(prop: ClimateProp, area: String, value: Float, dispatch: Dispatch, ok: (Float?) -> Unit, err: (ProbeError) -> Unit) {
+        // Certainly not sent: reported as not sent, never as an SDK failure.
+        val text = ClimateValues.payload(prop, value) ?: return dispatch.onNotSent("보낼 수 없는 ${prop.label} 값이에요($value)")
+        control.write(controlProp(prop), area, text, dispatch, { v -> ok(number(v)) }, err)
     }
 
-    override fun writeAuto(area: String, value: Boolean, ok: (Boolean?) -> Unit, err: (ProbeError) -> Unit) =
-        control.writeSide(SideState.HVAC_AUTO, area, value.toString(), { v -> ok(v?.toBooleanStrictOrNull()) }, err)
+    override fun writeAuto(area: String, value: Boolean, dispatch: Dispatch, ok: (Boolean?) -> Unit, err: (ProbeError) -> Unit) =
+        control.writeSide(SideState.HVAC_AUTO, area, value.toString(), dispatch, { v -> ok(v?.toBooleanStrictOrNull()) }, err)
 
-    override fun observe(prop: ClimateProp, area: String, onUpdate: (Float?) -> Unit): AutoCloseable =
-        control.observe(controlProp(prop), area, { v -> number(v)?.let(onUpdate) }, {})
+    override fun observe(prop: ClimateProp, area: String, onListening: (ProbeError?) -> Unit, onUpdate: (Float?) -> Unit): AutoCloseable =
+        control.observe(controlProp(prop), area, { v -> number(v)?.let(onUpdate) }, onListening, onListening)
 
     /** Non-finite values (Infinity, NaN) count as no value. */
     private fun number(text: String?): Float? = text?.toFloatOrNull()?.takeIf { it.isFinite() }

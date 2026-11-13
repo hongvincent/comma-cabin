@@ -2,6 +2,7 @@ package app.commacabin.lighting
 
 import app.commacabin.probe.Access
 import app.commacabin.probe.Cancellable
+import app.commacabin.probe.Dispatch
 import app.commacabin.probe.ParkingState
 import app.commacabin.probe.ProbeError
 import app.commacabin.probe.RecordLease
@@ -51,6 +52,8 @@ data class LightingUi(
  * nothing), a timeout leaves the request open and the record locked, a record that never answered in an
  * earlier run stays locked, no record is added or deleted after a storage fault, a damaged file is kept and
  * blocks lighting, user changes are never overwritten automatically, and nothing is written unless parked.
+ * A command waits in the SDK lane after its record is saved; right before it enters the SDK the checks run
+ * again on main (the gate), and one that never entered leaves only its own request (see [send]).
  */
 class RestLighting(
     private val port: LightingPort,
@@ -70,6 +73,18 @@ class RestLighting(
     private class Run(val id: Int, var line: String?, var ending: Boolean = false)
     private class Item(val prop: LightProp, val area: String, val bounds: IntRange?, val switchArea: String?, val skip: String?)
     private class Pending(val requestId: String, val timer: Cancellable, var timedOut: Boolean = false)
+    /** A command waiting in the SDK lane (record saved, not entered). */
+    private class Queued(val requestId: String)
+
+    /** The listener of one property and area, registered before its reads and its command (see [watch]). */
+    private class Watch {
+        var handle: AutoCloseable? = null
+        /** The registration call returned normally (the SDK gives no other ACK). The handle alone proves nothing. */
+        var registered = false
+        /** The value read right before a command of ours; a listener value off it refuses that command at its gate. */
+        var basis: Int? = null
+        var heard: Int? = null
+    }
     private class Restore(val jobId: String, val manual: Boolean)
 
     private var leaseId = 0
@@ -80,6 +95,8 @@ class RestLighting(
     private var loadProblem: String? = null
     private var storageFault: String? = null
     private val pending = mutableMapOf<String, Pending>()
+    /** jobId → command waiting in the SDK lane. Counts as work under way like [pending]. */
+    private val queued = mutableMapOf<String, Queued>()
     /** Answered, waiting for the separate read. */
     private val confirming = mutableSetOf<String>()
     /** jobId → run that applied it, in this process. */
@@ -88,7 +105,8 @@ class RestLighting(
     private val restoreAfterAnswer = mutableSetOf<String>()
     /** Apply chain continuation, called once the item's result is known or its request timed out. */
     private val waiters = mutableMapOf<String, () -> Unit>()
-    private val observers = mutableMapOf<String, AutoCloseable>()
+    /** "PROP|area" → its listener. One record per property and area, so a value belongs to that record. */
+    private val watches = mutableMapOf<String, Watch>()
     /** Jobs whose differing listener value is being checked by a read; true = another differing value came meanwhile. */
     private val checking = mutableMapOf<String, Boolean>()
     private val runItems = linkedMapOf<String, LightItemUi>()
@@ -143,8 +161,8 @@ class RestLighting(
         closed = true
         dropCheck()
         pending.values.forEach { it.timer.cancel() }
-        observers.values.forEach { runCatching { it.close() } }
-        observers.clear()
+        watches.values.forEach { w -> w.handle?.let { runCatching { it.close() } } }
+        watches.clear()
     }
 
     /** The debug tools' work, records or errors changed: recompute the shown blocks only. No vehicle read or write, no restore, no file change. */
@@ -225,7 +243,7 @@ class RestLighting(
         }
     }
 
-    private fun working() = preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || confirming.isNotEmpty()
+    private fun working() = preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || queued.isNotEmpty() || confirming.isNotEmpty()
 
     /** Losing parking cancels the preparation and remembers every open job of this process (see [parkLost]). */
     fun onParking(next: ParkingState) {
@@ -237,9 +255,10 @@ class RestLighting(
         if (preparing) {
             preparing = false
             opSeq++
+            dropUnusedWatches()
             log("$why: 무드등 적용 준비 취소")
         }
-        val open = pending.keys + confirming + restoreAfterAnswer + restoreQueue.map { it.jobId } + listOfNotNull(restoring) +
+        val open = pending.keys + queued.keys + confirming + restoreAfterAnswer + restoreQueue.map { it.jobId } + listOfNotNull(restoring) +
             jobRun.filterValues { it == run?.id }.keys.filter { record(it) != null }
         if (open.isNotEmpty() && parkLost.addAll(open)) log("$why: ${open.size}개 작업은 [원래대로] 전까지 새로 되돌리지 않음")
     }
@@ -248,7 +267,7 @@ class RestLighting(
     fun busyReason(): String? = when {
         !alive -> null
         loadProblem != null -> "휴식 무드등 기록을 읽을 수 없어요"
-        preparing || pending.isNotEmpty() || confirming.isNotEmpty() || restoring != null || restoreQueue.isNotEmpty() -> "휴식 무드등을 맞추거나 되돌리는 중이에요"
+        preparing || pending.isNotEmpty() || queued.isNotEmpty() || confirming.isNotEmpty() || restoring != null || restoreQueue.isNotEmpty() -> "휴식 무드등을 맞추거나 되돌리는 중이에요"
         records.isNotEmpty() -> "정리하지 않은 휴식 무드등 기록이 있어요"
         else -> null
     }
@@ -295,13 +314,14 @@ class RestLighting(
         if (preparing) {
             preparing = false
             opSeq++
+            dropUnusedWatches()
         }
         if (parkingLost) parkingLost("휴식 종료 원인 $reason")
         deferred = false
         val jobs = jobRun.filterValues { it == runId }.keys.filter { record(it) != null }
         log("run $runId 종료($reason): 이번 휴식이 바꾼 ${jobs.size}개 항목 복원")
-        jobs.filter { pending.containsKey(it) || it in confirming }.forEach { restoreAfterAnswer += it }
-        enqueue(jobs.filter { !pending.containsKey(it) && it !in confirming }, manual = false)
+        jobs.filter { inFlight(it) }.forEach { restoreAfterAnswer += it }
+        enqueue(jobs.filter { !inFlight(it) }, manual = false)
         publish()
     }
 
@@ -327,7 +347,7 @@ class RestLighting(
         if (!persist(keep)) return say("기록을 지우지 못했어요")
         earlierItems.clear()
         dropCheck()
-        gone.forEach { closeObserver(it.jobId) }
+        gone.forEach { closeWatch(it) }
         log("사용자가 조명 기록 ${gone.size}개를 지움(차량은 그대로)")
         say(if (keep.isEmpty()) "기록을 지웠어요. 무드등은 지금 상태 그대로예요" else "지울 수 있는 기록만 지웠어요")
     }
@@ -422,9 +442,21 @@ class RestLighting(
 
     /** Current value and target first, then the switch as the very last read, then the record, a final check and the command. */
     private fun applyItem(token: Int, runId: Int, item: Item, then: () -> Unit) {
+        val k = itemKey(item.prop, item.area)
+        // Registered before the reads (the lane keeps the order): a change while our command waits is heard.
+        val w = watch(item.prop, item.area)
+        val done = {
+            if (records.none { itemKey(it.prop, it.area) == k }) closeWatch(k)
+            then()
+        }
         askOrNull(token, runId, "${item.prop.label} 현재값", { ok, err -> port.read(item.prop, item.area, ok, err) }) { cur, readErr ->
+            if (cur != null && watches[k] === w) {
+                w.basis = cur
+                w.heard = null
+            }
             val target = cur?.let { targetFor(item, it) }
             val why = when {
+                watches[k] !== w || !w.registered -> "차량 값 변화를 확인할 수 없어 조정하지 않았어요"
                 cur == null -> userText("현재 값을 읽지 못해 조정하지 않았어요", readErr)
                 item.prop == LightProp.BRIGHTNESS && (item.bounds == null || cur !in item.bounds) -> "현재 밝기가 지원 범위 밖이라 조정하지 않았어요"
                 item.prop == LightProp.COLOR && !LightValues.alphaAllowed(cur) -> "현재 색 값을 해석할 수 없어 조정하지 않았어요"
@@ -433,7 +465,7 @@ class RestLighting(
             }
             if (why != null || cur == null || target == null) {
                 mark(item.prop, item.area, cur, LightResult.SKIPPED, why ?: "조정하지 않았어요")
-                return@askOrNull then()
+                return@askOrNull done()
             }
             askOrNull(token, runId, "${item.prop.label} 스위치", { ok, err -> port.readSwitch(item.switchArea!!, ok, err) }) { sw, swErr ->
                 val block = when {
@@ -443,23 +475,26 @@ class RestLighting(
                 }
                 if (block != null) {
                     mark(item.prop, item.area, cur, LightResult.SKIPPED, block)
-                    return@askOrNull then()
+                    return@askOrNull done()
                 }
                 val record = LightRecord(newId(), item.prop, item.area, cur, target, LightStage.APPLY_REQUESTED, newId(), target, responseReceived = false)
                 if (!persist(records + record)) {
                     mark(item.prop, item.area, cur, LightResult.SKIPPED, "기록을 저장하지 못해 조정하지 않았어요")
-                    return@askOrNull then()
-                }
-                if (!current(token, runId) || commandBlock(item.prop, item.area, record.jobId) != null) {
-                    // Certainly not sent: the record goes (if the file can still change) and nothing is written.
-                    persist(records.filter { it.jobId != record.jobId })
-                    mark(item.prop, item.area, cur, LightResult.SKIPPED, "명령 직전 조건이 바뀌어 조정하지 않았어요")
-                    return@askOrNull if (current(token, runId)) then() else Unit
+                    return@askOrNull done()
                 }
                 jobRun[record.jobId] = runId
                 waiters[record.jobId] = { if (current(token, runId)) then() }
                 mark(record, LightResult.WORKING, "맞추는 중이에요")
-                send(record)
+                send(record, gate = { if (!current(token, runId)) "휴식이 끝났어요" else commandBlock(item.prop, item.area, record.jobId) }) { why ->
+                    // Certainly not sent: only this request's record goes (if the file can still change; else it stays locked).
+                    if (records.any { it.jobId == record.jobId && it.requestId == record.requestId } && persist(records.filter { it.jobId != record.jobId })) {
+                        jobRun.remove(record.jobId)
+                        restoreAfterAnswer -= record.jobId
+                    }
+                    if (records.none { itemKey(it.prop, it.area) == k }) closeWatch(k)
+                    markRun(runId, item.prop, item.area, cur, LightResult.SKIPPED, userText("명령 직전 조건이 바뀌어 조정하지 않았어요", why))
+                    waiters.remove(record.jobId)?.invoke()
+                }
             }
         }
     }
@@ -480,16 +515,54 @@ class RestLighting(
 
     // --- requests and answers ---
 
-    private fun send(r: LightRecord) {
+    /**
+     * [r] is saved. It waits in the SDK lane; right before the SDK entry, on main: the record must still be this
+     * request, the item's listener registered with no value off the read the command is based on, and [gate]
+     * passes. The write timeout starts then, before the entry. [notSent]: it never entered; tracking of this
+     * request is undone first, the caller handles its record.
+     */
+    private fun send(r: LightRecord, gate: () -> String?, notSent: (String) -> Unit) {
         val requestId = r.requestId
-        val timer = scheduler.schedule(LIGHT_WRITE_TIMEOUT_MS) { onTimeout(r.jobId, requestId) }
-        pending[r.jobId] = Pending(requestId, timer)
-        log("${r.prop.label} ${if (r.stage == LightStage.RESTORE_REQUESTED) "복원" else "적용"} 요청 #${requestId.take(8)} ${r.area} payload=${show(r.prop, r.payload)} (원래 ${show(r.prop, r.original)})")
+        val kind = if (r.stage == LightStage.RESTORE_REQUESTED) "복원" else "적용"
+        val k = itemKey(r.prop, r.area)
+        queued[r.jobId] = Queued(requestId)
         publish()
-        port.write(r.prop, r.area, r.payload, { echo -> onAnswer(r.jobId, requestId, "onComplete(${echo?.let { show(r.prop, it) }})", ok = true, echo = echo) }, { e ->
+        val dispatch = Dispatch(
+            gate = {
+                val w = watches[k]
+                when {
+                    queued[r.jobId]?.requestId != requestId || record(r.jobId)?.requestId != requestId -> "기록이 바뀌었어요"
+                    w == null || !w.registered -> "차량 값 변화를 확인할 리스너가 없어요"
+                    w.heard != null -> "명령을 기다리는 동안 차량 값이 ${show(r.prop, w.heard!!)}(으)로 바뀌었어요"
+                    else -> gate()
+                }
+            },
+            onStart = {
+                queued.remove(r.jobId)
+                watches[k]?.basis = null
+                pending[r.jobId] = Pending(requestId, scheduler.schedule(LIGHT_WRITE_TIMEOUT_MS) { onTimeout(r.jobId, requestId) })
+                log("${r.prop.label} $kind 요청 #${requestId.take(8)} ${r.area} payload=${show(r.prop, r.payload)} (원래 ${show(r.prop, r.original)})")
+                publish()
+            },
+            onNotSent = { why ->
+                if (queued[r.jobId]?.requestId == requestId) queued.remove(r.jobId)
+                watches[k]?.basis = null
+                pending[r.jobId]?.takeIf { it.requestId == requestId }?.let {
+                    it.timer.cancel()
+                    pending.remove(r.jobId)
+                }
+                log("${r.prop.label} $kind 요청 #${requestId.take(8)} 보내지 않음: $why")
+                notSent(why)
+                publish()
+            },
+        )
+        port.write(r.prop, r.area, r.payload, dispatch, { echo -> onAnswer(r.jobId, requestId, "onComplete(${echo?.let { show(r.prop, it) }})", ok = true, echo = echo) }, { e ->
             onAnswer(r.jobId, requestId, "onFailed(${e.text()})", ok = false, echo = null)
         })
     }
+
+    /** Ours open on [jobId]: waiting in the lane, sent and unanswered, or answered and waiting for the read. */
+    private fun inFlight(jobId: String) = pending.containsKey(jobId) || queued.containsKey(jobId) || jobId in confirming
 
     /** The request stays open and its record locked; the next item may go on. */
     private fun onTimeout(jobId: String, requestId: String) {
@@ -530,7 +603,7 @@ class RestLighting(
             if (r.stage == LightStage.RESTORE_REQUESTED) {
                 if (ok && LightValues.same(r.prop, value, r.original)) {
                     if (storageFault == null && persist(records.filter { it.jobId != jobId })) {
-                        closeObserver(jobId)
+                        closeWatch(r)
                         log("${r.prop.label} 복원 확인: 재조회 $read = 원래 ${show(r.prop, r.original)}. 기록 삭제")
                         mark(r, LightResult.RESTORED, "원래대로 돌렸어요")
                     } else {
@@ -551,7 +624,7 @@ class RestLighting(
             log("${r.prop.label} ${if (confirmed) "적용 확인" else "결과 불명"}: 요청 ${show(r.prop, r.target)}, 재조회 $read")
             if (confirmed) {
                 mark(next, LightResult.APPLIED, if (r.prop == LightProp.BRIGHTNESS) "${r.target}(으)로 낮췄어요" else "따뜻한 색으로 바꿨어요")
-                observe(next)
+                watch(next.prop, next.area)
             } else {
                 mark(next, LightResult.UNKNOWN, "바뀌었는지 확인하지 못했어요")
             }
@@ -563,21 +636,46 @@ class RestLighting(
     }
 
     /**
+     * The item's listener, registered once and before its reads (the lane keeps that order), so a value that
+     * changes while a command of ours waits is heard. Only [Watch.registered] counts as registered. A failed
+     * registration, or a listener error later, leaves no watch (the listener is removed): the item gets no
+     * command until a new one registers. A listener error is not a user change.
+     */
+    private fun watch(prop: LightProp, area: String): Watch {
+        val k = itemKey(prop, area)
+        watches[k]?.let { return it }
+        val w = Watch()
+        watches[k] = w
+        try {
+            w.handle = port.observe(prop, area, { e ->
+                if (watches[k] !== w) return@observe
+                if (e == null) {
+                    w.registered = true
+                } else {
+                    closeWatch(k)
+                    if (alive) log("${prop.label} 리스너 ${if (w.registered) "오류" else "등록 실패"}: ${e.text()}. 새로 등록하기 전에는 이 항목에 명령하지 않아요")
+                }
+            }) { v -> onWatch(k, w, prop, v) }
+        } catch (e: RuntimeException) {
+            watches.remove(k)
+            log("${prop.label} 리스너 등록 실패: ${e.javaClass.name}. 이 항목은 명령하지 않아요")
+        }
+        return w
+    }
+
+    /** A value off the basis of a waiting command refuses it at its gate; then the record's user-change check. */
+    private fun onWatch(k: String, w: Watch, prop: LightProp, value: Int?) {
+        if (!alive || value == null || watches[k] !== w) return
+        w.basis?.let { if (!LightValues.same(prop, value, it)) w.heard = value }
+        records.firstOrNull { itemKey(it.prop, it.area) == k }?.let { onListener(it.jobId, value) }
+    }
+
+    /**
      * User changes: only for a confirmed apply with nothing of ours in flight. A listener value is not proof of
      * the vehicle value: right after registering, the service can replay an old cached value (seen: 70 while the
      * vehicle read 30). So a differing value only starts a separate read, and that read decides.
      */
-    private fun observe(r: LightRecord) {
-        if (observers.containsKey(r.jobId)) return
-        try {
-            observers[r.jobId] = port.observe(r.prop, r.area) { v -> onListener(r.jobId, v) }
-        } catch (e: RuntimeException) {
-            log("${r.prop.label} 리스너 등록 실패: ${e.javaClass.name}. 종료 직전 조회로만 사용자 변경을 확인")
-        }
-    }
-
-    private fun onListener(jobId: String, value: Int?) {
-        if (!alive || value == null) return
+    private fun onListener(jobId: String, value: Int) {
         val r = record(jobId)?.takeIf { settled(it) } ?: return
         if (LightValues.same(r.prop, value, r.target)) return
         if (jobId in checking) {
@@ -612,7 +710,7 @@ class RestLighting(
                 }
                 else -> {
                     persist(replace(now.copy(stage = LightStage.USER_CHANGED, lastRead = cur)))
-                    closeObserver(r.jobId)
+                    closeWatch(r)
                     log("${r.prop.label} 사용자 변경 확인: 실제 ${show(r.prop, cur)}(앱 값 ${show(r.prop, r.target)}). 더 쓰거나 자동으로 되돌리지 않아요")
                     mark(now, LightResult.USER_CHANGED, "직접 바꾼 값이라 그대로 두었어요")
                 }
@@ -635,7 +733,7 @@ class RestLighting(
     private fun discardBlock(): String? = when {
         loadProblem != null -> "기록 파일에 문제가 있어 앱에서 지우지 않아요"
         storageFault != null -> "기록 저장 오류가 있어 지울 수 없어요"
-        preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || confirming.isNotEmpty() -> "진행 중인 무드등 작업이 끝난 뒤에 지울 수 있어요"
+        preparing || restoring != null || restoreQueue.isNotEmpty() || pending.isNotEmpty() || queued.isNotEmpty() || confirming.isNotEmpty() -> "진행 중인 무드등 작업이 끝난 뒤에 지울 수 있어요"
         records.none { !it.locked } -> if (records.isEmpty()) "지울 기록이 없어요" else "결과를 모르는 요청이 있는 기록은 지울 수 없어요"
         else -> null
     }
@@ -656,7 +754,7 @@ class RestLighting(
         if (!alive || restoring != null) return publish()
         val job = restoreQueue.removeFirstOrNull() ?: return publish()
         val r = record(job.jobId) ?: return restoreNext()
-        if (pending.containsKey(r.jobId) || r.jobId in confirming) {
+        if (inFlight(r.jobId)) {
             restoreAfterAnswer += r.jobId
             return restoreNext()
         }
@@ -671,16 +769,22 @@ class RestLighting(
         restoreHold(r.jobId)?.let { return hold(r, it) }
         restoring = r.jobId
         publish()
+        // Registered before the reads, also when no listener was left (an earlier process, a held record).
+        val k = itemKey(r.prop, r.area)
+        val w = watch(r.prop, r.area)
         restoreCapability(r) { capProblem ->
             if (capProblem != null) return@restoreCapability hold(r, capProblem)
             readOrNull(r.prop, r.area) { cur, readErr ->
                 val latest = record(r.jobId)?.takeIf { it.requestId == r.requestId } ?: return@readOrNull release()
+                if (watches[k] !== w || !w.registered) return@readOrNull hold(latest, "차량 값 변화를 확인할 수 없어 되돌리지 않았어요")
                 if (cur == null) return@readOrNull hold(latest, userText("현재 값을 읽지 못해 되돌리지 않았어요", readErr))
+                w.basis = cur
+                w.heard = null
                 val ours = LightValues.same(r.prop, cur, r.target) || LightValues.same(r.prop, cur, r.original)
                 if (!job.manual && !ours) {
                     // Checked again right before the restore: a change the listener missed is still the user's.
                     persist(replace(latest.copy(stage = LightStage.USER_CHANGED, lastRead = cur)))
-                    closeObserver(r.jobId)
+                    closeWatch(r)
                     log("${r.prop.label} 종료 직전 조회 ${show(r.prop, cur)} ≠ 앱 값 ${show(r.prop, r.target)}: 사용자 변경으로 보고 되돌리지 않음")
                     mark(latest, LightResult.USER_CHANGED, "직접 바꾼 값이라 그대로 두었어요")
                     return@readOrNull release()
@@ -693,13 +797,16 @@ class RestLighting(
                         responseReceived = false, lastEcho = null, lastRead = cur,
                     )
                     if (!persist(replace(next))) return@lastSwitch release()
-                    restoreHold(r.jobId)?.let {
-                        // Saved but certainly not sent: back to the record as it was, then held.
-                        persist(replace(now))
-                        return@lastSwitch hold(now, it)
-                    }
                     mark(next, LightResult.WORKING, "되돌리는 중이에요")
-                    send(next)
+                    send(next, gate = { if (restoring != r.jobId) "복원 작업이 바뀌었어요" else restoreHold(r.jobId) }) { why ->
+                        // Saved but certainly not sent: back to the record as it was (this request only), then held.
+                        if (record(r.jobId)?.requestId == next.requestId) {
+                            persist(replace(now))
+                            if (restoring == r.jobId) hold(now, userText("명령 직전 조건이 바뀌어 되돌리지 않았어요", why))
+                        } else if (restoring == r.jobId) {
+                            release() // the record is no longer this request: leave it as it is
+                        }
+                    }
                 }
             }
         }
@@ -766,7 +873,7 @@ class RestLighting(
     private fun hold(r: LightRecord, why: String) {
         val latest = record(r.jobId) ?: r
         if (latest.stage != LightStage.RESTORE_HELD) persist(replace(latest.copy(stage = LightStage.RESTORE_HELD)))
-        closeObserver(r.jobId)
+        closeWatch(r)
         heldWhy[r.jobId] = why
         log("${r.prop.label} 복원 보류: $why")
         mark(latest, LightResult.HELD, why)
@@ -838,8 +945,17 @@ class RestLighting(
         return true
     }
 
-    private fun closeObserver(jobId: String) {
-        observers.remove(jobId)?.let { runCatching { it.close() } }
+    private fun itemKey(prop: LightProp, area: String) = "${prop.name}|$area"
+
+    private fun closeWatch(k: String) {
+        watches.remove(k)?.handle?.let { runCatching { it.close() } }
+    }
+
+    private fun closeWatch(r: LightRecord) = closeWatch(itemKey(r.prop, r.area))
+
+    /** Preparation stopped: listeners of items that got no record go. */
+    private fun dropUnusedWatches() {
+        watches.keys.filter { k -> records.none { itemKey(it.prop, it.area) == k } }.forEach { closeWatch(it) }
     }
 
     // --- screen state ---
@@ -847,6 +963,13 @@ class RestLighting(
     /** An item of the latest rest (its line and end screen). */
     private fun mark(prop: LightProp, area: String, original: Int?, result: LightResult, text: String) {
         runItems["${prop.name}|$area"] = LightItemUi(prop, area, original, result, text)
+        publish()
+    }
+
+    /** An item of run [runId]: on the latest rest's lines only while that rest is the latest, else with the earlier results. */
+    private fun markRun(runId: Int, prop: LightProp, area: String, original: Int?, result: LightResult, text: String) {
+        if (run?.id == runId) return mark(prop, area, original, result, text)
+        earlierItems["${prop.name}|$area"] = LightItemUi(prop, area, original, result, text)
         publish()
     }
 

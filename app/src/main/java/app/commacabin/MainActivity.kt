@@ -1,6 +1,5 @@
 package app.commacabin
 
-import ai.pleos.playground.vehicle.Vehicle
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -97,7 +96,8 @@ class MainActivity : ComponentActivity() {
     private val debugBusy: () -> String? = { debugBusyReason() }
     /** One TextToSpeech object at a time, shared by the rest announcement and the TTS diagnostic. */
     private val ttsSlot = TtsSlot()
-    private lateinit var vehicle: Vehicle
+    /** This Activity's SDK tasks in the process lane: closed (cancelled, listeners removed) when it is destroyed. */
+    private val sdkOwner = Any()
     private lateinit var parking: CarParkingSource
     private lateinit var door: DoorMonitor
     private lateinit var rest: RestFlow
@@ -128,17 +128,20 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         cabin = CabinProcess.get(applicationContext)
-        vehicle = Vehicle(applicationContext)
-        vehicle.initialize()
-        val readPort = PleosVehicleReadPort(vehicle, main)
+        // The process's Vehicle and SDK lane: no SDK call on this thread, none outlives a release.
+        val vehicle = cabin.vehicle
+        val lane = cabin.lane
+        val readPort = PleosVehicleReadPort(vehicle, lane, sdkOwner)
         parking = CarParkingSource(this, main) { state ->
             probe.onParkingChanged(state)
             rest.onParking(state)
             bench.onParking(state)
+            presetBench.onParking(state)
         }
         door = DoorMonitor(readPort, scheduler, { line -> Log.i(DOOR_TAG, line) }) { state ->
             rest.onDoor(state)
             bench.onDoor(state.status)
+            presetBench.onDoor(state.status)
         }
         val prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
         audio = RestAudio(
@@ -174,7 +177,7 @@ class MainActivity : ComponentActivity() {
             },
             audio = audio,
             log = { line -> Log.i(REST_TAG, line) },
-            startBlock = { presetSeatBusy() },
+            startBlock = { presetSeatBusy() ?: seatMotionBlock() },
         )
         rest.listenTo(audio)
         restState = mutableStateOf(rest.state)
@@ -200,7 +203,7 @@ class MainActivity : ComponentActivity() {
         }
         baseBrightness = window.attributes.screenBrightness
         probe = AmbientProbe(
-            light = PleosLightPort(vehicle.getLight(), main),
+            light = PleosLightPort(vehicle.getLight(), lane, sdkOwner),
             store = FileRecoveryStore(File(filesDir, FileRecoveryStore.FILE_NAME)),
             scheduler = scheduler,
             parking = { parking.state },
@@ -210,7 +213,7 @@ class MainActivity : ComponentActivity() {
             externalBlock = { cabin.productBusy() },
         )
         bench = ControlBench(
-            port = PleosControlPort(vehicle, main),
+            port = PleosControlPort(vehicle, lane, sdkOwner),
             store = FileControlStore(File(filesDir, FileControlStore.FILE_NAME)),
             scheduler = scheduler,
             parking = { parking.state },
@@ -227,7 +230,7 @@ class MainActivity : ComponentActivity() {
             cabin.debugChanged()
         }
         presetBench = SeatPresetBench(
-            port = app.commacabin.sdk.PleosSeatPresetPort(vehicle, main),
+            port = app.commacabin.sdk.PleosSeatPresetPort(vehicle, lane, sdkOwner),
             store = FilePresetStore(File(filesDir, FilePresetStore.FILE_NAME)),
             parking = { parking.state },
             door = { door.state.status },
@@ -433,6 +436,12 @@ class MainActivity : ComponentActivity() {
     /** The debug seat preset holds a request the operator has not confirmed: no other seat move and no rest start. */
     private fun presetSeatBusy(): String? = if (::presetBench.isInitialized) presetBench.busyReason() else null
 
+    /**
+     * The process SDK lane is reserved for a seat motion whose STOP has not answered (any debug seat tool): no SDK
+     * read of the rest would run, so no rest starts. Only the real reservation counts, not every debug busy state.
+     */
+    private fun seatMotionBlock(): String? = cabin.lane.motion?.let { "시트 이동의 STOP 응답을 아직 확인하지 못했어요" }
+
     private fun debugBusyReason(): String? {
         if (!::probe.isInitialized || !::bench.isInitialized) return null
         val p = probe.state
@@ -446,8 +455,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    // The probe is closed first so no late SDK callback can touch the record after this Activity is gone.
-    // The process-wide lighting owner is not closed: its restore goes on with its own Handler and Vehicle.
+    // The tools close first (a moving seat gets its STOP, nothing more is shown), then this Activity's SDK tasks:
+    // writes still waiting end as not sent (records only), reads and listener registrations waiting are dropped,
+    // registered listeners are removed on the lane. STOP and clean-up still run. The Vehicle is not released (the
+    // process owns it). The process-wide lighting and climate owners are not closed: their restores go on.
+    // Lane callbacks use the process Handler, so removeCallbacksAndMessages here never drops one.
     override fun onDestroy() {
         if (cabin.lighting.onState === lightingListener) cabin.lighting.onState = {}
         if (cabin.climate.onState === climateListener) cabin.climate.onState = {}
@@ -461,7 +473,7 @@ class MainActivity : ComponentActivity() {
         tts.close()
         probe.close()
         parking.close()
-        vehicle.release()
+        cabin.lane.close(sdkOwner)
         super.onDestroy()
     }
 
