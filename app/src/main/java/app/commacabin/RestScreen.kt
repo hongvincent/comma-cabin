@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -452,18 +451,15 @@ private fun LightingRecords(lighting: LightingUi, actions: RestActions) {
         lighting.notice?.let { Text(it, color = TextMain, fontSize = 20.sp) }
     }
     if (confirm) {
-        AlertDialog(
-            onDismissRequest = { confirm = false },
-            title = { Text("기록만 지울까요?") },
-            text = { Text("기록을 지워도 무드등은 되돌아가지 않아요. 지금 상태 그대로 남고, 필요하면 차량 설정에서 직접 맞춰야 해요.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirm = false
-                    actions.discardLighting()
-                }) { Text("기록 지우기") }
-            },
-            dismissButton = { TextButton(onClick = { confirm = false }) { Text("취소") } },
-        )
+        ConfirmDialog(
+            title = "기록만 지울까요?",
+            body = "기록을 지워도 무드등은 되돌아가지 않아요. 지금 상태 그대로 남고, 필요하면 차량 설정에서 직접 맞춰야 해요.",
+            confirmLabel = "기록 지우기",
+            onDismiss = { confirm = false },
+        ) {
+            confirm = false
+            actions.discardLighting()
+        }
     }
 }
 
@@ -569,18 +565,15 @@ private fun ClimateRecords(climate: ClimateUi, actions: RestActions) {
         climate.notice?.let { Text(it, color = TextMain, fontSize = 20.sp) }
     }
     if (confirm) {
-        AlertDialog(
-            onDismissRequest = { confirm = false },
-            title = { Text("공조 기록만 지울까요?") },
-            text = { Text("기록을 지워도 공조는 되돌아가지 않아요. 지금 상태 그대로 남고, 필요하면 차량에서 직접 맞춰야 해요.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirm = false
-                    actions.discardClimate()
-                }) { Text("기록 지우기") }
-            },
-            dismissButton = { TextButton(onClick = { confirm = false }) { Text("취소") } },
-        )
+        ConfirmDialog(
+            title = "공조 기록만 지울까요?",
+            body = "기록을 지워도 공조는 되돌아가지 않아요. 지금 상태 그대로 남고, 필요하면 차량에서 직접 맞춰야 해요.",
+            confirmLabel = "기록 지우기",
+            onDismiss = { confirm = false },
+        ) {
+            confirm = false
+            actions.discardClimate()
+        }
     }
 }
 

@@ -29,6 +29,10 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -37,6 +41,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 
 // Product screen look: light, to continue the vehicle's white screens around the app. A calm deep teal for the one
 // main action and the selected choices, thin lines instead of heavy cards. System font, native Material3 parts.
@@ -215,6 +221,41 @@ internal fun PrimaryButton(label: String, enabled: Boolean, onClick: () -> Unit)
 internal fun SecondaryButton(label: String, modifier: Modifier = Modifier, minWidth: Dp = 180.dp, minHeight: Dp = ButtonHeight, fontSize: Int = 28, onClick: () -> Unit) {
     OutlinedButton(onClick = onClick, modifier = modifier.widthIn(min = minWidth).heightIn(min = minHeight), colors = ButtonDefaults.outlinedButtonColors(contentColor = TextMain), border = BorderStroke(1.dp, Outline)) {
         Text(label, fontSize = fontSize.sp)
+    }
+}
+
+/**
+ * A product confirmation sized for the vehicle screen: 32sp title, 24sp body, 24sp buttons at least 80dp high, up
+ * to 800dp wide (a narrower area: its width). Material3's AlertDialog caps its width at 560dp, and the platform's
+ * default dialog width is smaller still, so this is a Dialog with usePlatformDefaultWidth = false. [취소], a tap
+ * outside and Back only close it ([onDismiss]); only [confirmLabel] calls [onConfirm], and only once.
+ */
+@Composable
+internal fun ConfirmDialog(title: String, body: String, confirmLabel: String, onDismiss: () -> Unit, onConfirm: () -> Unit) {
+    var done by remember { mutableStateOf(false) }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier.padding(24.dp).widthIn(max = 800.dp).fillMaxWidth().background(Card, RoundedCornerShape(24.dp)).padding(40.dp),
+            verticalArrangement = Arrangement.spacedBy(24.dp),
+        ) {
+            Text(title, color = TextMain, fontSize = 32.sp, lineHeight = 40.sp, fontWeight = FontWeight.SemiBold)
+            Text(body, color = TextMain, fontSize = 24.sp, lineHeight = 36.sp)
+            Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(16.dp, Alignment.End)) {
+                SmallButton("취소", enabled = true, minWidth = 200.dp, fontSize = 24, onClick = onDismiss)
+                OutlinedButton(
+                    onClick = {
+                        if (done) return@OutlinedButton
+                        done = true
+                        onConfirm()
+                    },
+                    modifier = Modifier.heightIn(min = 80.dp).widthIn(min = 200.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Warn),
+                    border = BorderStroke(1.dp, Warn),
+                ) {
+                    Text(confirmLabel, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
     }
 }
 

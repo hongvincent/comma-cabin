@@ -116,6 +116,8 @@ class MainActivity : ComponentActivity() {
     private var controlShown = false
     /** The debug seat preset tab is in the composition. */
     private var presetShown = false
+    /** The debug brightness check read the vehicle once since this Activity was created (only after it was opened). */
+    private var probeOpened = false
 
     private val scheduler = object : Scheduler {
         override fun schedule(delayMs: Long, task: () -> Unit): Cancellable {
@@ -260,8 +262,6 @@ class MainActivity : ComponentActivity() {
         // The product blocks were computed with the debug tools of before (or none): recompute them with this Activity's.
         cabin.debugChanged()
         parking.start()
-        // "SDK initialized" does not mean the Vehicle service is bound yet, so the first read waits briefly.
-        main.postDelayed({ probe.refresh() }, FIRST_READ_DELAY_MS)
         val restActions = RestActions(
             dismissOnboarding = rest::dismissOnboarding,
             adjustPickup = rest::adjustPickup,
@@ -358,6 +358,15 @@ class MainActivity : ComponentActivity() {
                     onTtsSpeak = tts::speakTest,
                 )
             } else {
+                // The debug brightness check reads the vehicle only once its screen is really opened, never on a product
+                // start. Nothing is scheduled, so leaving the screen leaves no read behind; [새로고침] reads again.
+                DisposableEffect(Unit) {
+                    if (!probeOpened) {
+                        probeOpened = true
+                        probe.refresh()
+                    }
+                    onDispose {}
+                }
                 ProbeScreen(
                     state = uiState.value,
                     onStart = probe::startChange,
