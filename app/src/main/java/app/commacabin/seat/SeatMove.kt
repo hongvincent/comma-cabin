@@ -183,6 +183,51 @@ data class SeatMoveState(
     val lock: String? = null,
     /** This run finished an attempt whose record [SeatMoveCore.clearRecord] may remove (once). */
     val clearable: Boolean = false,
+    /** Structured result of the attempt that just ended; null while one runs. */
+    val result: SeatAttemptResult? = null,
+)
+
+/** Why an attempt stopped. [fault]: a failure of trust (a value, a listener, a command, a limit), not a plain request. */
+enum class SeatStopCause(val fault: Boolean) {
+    TARGET(false),
+    INTERRUPTED(false),
+    NOT_SENT(false),
+    MANUAL_STOP(true),
+    NO_CHANGE(true),
+    MOVE_LIMIT(true),
+    WRONG_DIRECTION(true),
+    NO_VALUE(true),
+    OUT_OF_RANGE(true),
+    LISTENER_FAILED(true),
+    MOVE_FAILED(true),
+    STOP_FAILED(true),
+    /** After a read taken once the motion ended, the position reported another value. */
+    MOVED_AFTER_STOP(true),
+}
+
+/**
+ * What an ended attempt proves, without parsing text. [firstCause]: the first reason it stopped (null: nothing stopped
+ * it, e.g. a refusal before the MOVE). [faultAfter]: a failure of trust came after that first cause (a missing or
+ * out-of-range value, a listener, MOVE or STOP failure, a manual STOP); an in-range value short of the target is none.
+ * [stoppedAfterMove]: MOVE COMPLETED and the latest STOP sent after it COMPLETED. [lastRead]: the last read taken after
+ * the motion ended, only when in range. A STOP answer is never proof that the seat physically stopped.
+ */
+data class SeatAttemptResult(
+    val jobId: String,
+    val moveRequestId: String,
+    val purpose: SeatPurpose,
+    /** The record's current outcome (HELD once [SeatMoveCore.holdRecord] kept it). */
+    val outcome: SeatOutcome,
+    /** How the attempt itself ended; never changed afterwards. */
+    val endedAs: SeatOutcome,
+    /** The cause [SeatMoveCore.holdRecord] kept after the attempt ended; null if not held afterwards. */
+    val heldAfter: String? = null,
+    val firstCause: SeatStopCause?,
+    val faultAfter: Boolean,
+    val allAnswered: Boolean,
+    val stoppedAfterMove: Boolean,
+    val readsAfterStop: List<Int?>,
+    val lastRead: Int?,
 )
 
 /**

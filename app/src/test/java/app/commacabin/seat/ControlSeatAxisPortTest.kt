@@ -18,7 +18,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Records every ControlPort call; the test answers each callback itself. */
-private class FakeControlPort : ControlPort {
+class FakeControlPort : ControlPort {
     class Read(val prop: ControlProp, val area: String, val ok: (String?) -> Unit, val err: (ProbeError) -> Unit)
     class MoveCall(val area: String, val control: Move, val key: String, val dispatch: Dispatch, val ok: (String?) -> Unit, val err: (ProbeError) -> Unit)
     class Observe(
@@ -34,8 +34,11 @@ private class FakeControlPort : ControlPort {
     val observes = mutableListOf<Observe>()
     val ended = mutableListOf<String>()
 
+    val capabilities = mutableListOf<Pair<(CapabilityResult, CapabilityResult?, Float?) -> Unit, (ProbeError) -> Unit>>()
+
     override fun capability(prop: ControlProp, ok: (CapabilityResult, CapabilityResult?, Float?) -> Unit, err: (ProbeError) -> Unit) {
-        calls += "capability"
+        calls += "capability $prop"
+        capabilities += ok to err
     }
 
     override fun sideAreas(state: SideState, ok: (Access, List<String>) -> Unit, err: (ProbeError) -> Unit) {

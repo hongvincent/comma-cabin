@@ -73,6 +73,9 @@ class SeatMoveCore(
         var stopSent = false
         /** First cause of a STOP other than "target reached"; never cleared. */
         var held: String? = null
+        /** The first structured cause, then whether a failure of trust came after it. */
+        var cause: SeatStopCause? = null
+        var faultAfter = false
         val autoStopIds = ArrayDeque(listOf(req.stopRequestId, req.finalStopRequestId))
         var last = req.start
         /** Changes on every STOP and at the end: a waiting settle step or confirming read of before is ignored. */
@@ -133,11 +136,13 @@ class SeatMoveCore(
         val run = current ?: return "이 코어가 진행 중인 시트 작업이 없어요".also { log("STOP($reason) 보내지 않음: $it") }
         if (run.phase == SeatPhase.PREPARING) {
             latch(run, "수동 STOP($reason)")
+            note(run, SeatStopCause.MANUAL_STOP)
             finish(run, SeatOutcome.NOT_SENT, "STOP($reason): 이동을 넘기기 전이라 준비만 취소")
             return "이동을 넘기기 전이라 준비만 취소했어요(보낼 STOP 없음)"
         }
         idProblem(requestId)?.let { return it.also { log("STOP($reason) 보내지 않음: $it") } }
         latch(run, "수동 STOP($reason)")
+        note(run, SeatStopCause.MANUAL_STOP)
         sendStop(run, reason, requestId)
         return null
     }
@@ -153,6 +158,7 @@ class SeatMoveCore(
     fun interrupt(reason: String, stopRequestId: String): String? {
         val run = current ?: return "이 코어가 진행 중인 시트 작업이 없어요".also { log("$reason: $it") }
         latch(run, reason)
+        note(run, SeatStopCause.INTERRUPTED)
         when (run.phase) {
             SeatPhase.PREPARING -> {
                 finish(run, SeatOutcome.NOT_SENT, "$reason: 이동을 넘기기 전이라 준비만 취소")
@@ -263,7 +269,7 @@ class SeatMoveCore(
             }
         }
         run.timers += scheduler.schedule(l.maxMoveMs) {
-            if (current === run && run.phase == SeatPhase.MOVING) autoStop(run, "이동 상한 ${l.maxMoveMs}ms")
+            if (current === run && run.phase == SeatPhase.MOVING) autoStop(run, "이동 상한 ${l.maxMoveMs}ms", SeatStopCause.MOVE_LIMIT)
         }
         restartNoChange(run)
         update()
@@ -280,7 +286,7 @@ class SeatMoveCore(
         if (current !== run || snap?.move?.terminal != false) return log("끝났거나 중복된 MOVE 응답 무시: $text")
         run.moveTimer?.cancel()
         mark(run) { copy(move = move.copy(state = if (ok) SeatRequestState.COMPLETED else SeatRequestState.FAILED, answer = text)) }
-        if (!ok) autoStop(run, "이동 요청 실패")
+        if (!ok) autoStop(run, "이동 요청 실패", SeatStopCause.MOVE_FAILED)
         tryFinish(run)
     }
 
@@ -291,21 +297,37 @@ class SeatMoveCore(
         when (run.phase) {
             SeatPhase.PREPARING, SeatPhase.QUEUED -> if (v != req.start && run.fault == null) run.fault = "이동 전 위치가 $v(으)로 바뀌었어요"
             SeatPhase.MOVING -> {
-                if (v == null) return autoStop(run, "위치 값 없음")
+                if (v == null) return autoStop(run, "위치 값 없음", SeatStopCause.NO_VALUE)
                 val up = req.target > req.start
                 val reached = if (up) v.toLong() >= req.target.toLong() - l.tolerance else v.toLong() <= req.target.toLong() + l.tolerance
                 when {
-                    v !in l.range -> autoStop(run, "범위 ${l.range} 밖 위치 $v")
-                    reached -> autoStop(run, "목표 도달·통과(위치 $v)", abort = false)
-                    if (up) v < run.last else v > run.last -> autoStop(run, "반대 방향 변화(${run.last} → $v)")
+                    v !in l.range -> autoStop(run, "범위 ${l.range} 밖 위치 $v", SeatStopCause.OUT_OF_RANGE)
+                    reached -> autoStop(run, "목표 도달·통과(위치 $v)", SeatStopCause.TARGET, abort = false)
+                    if (up) v < run.last else v > run.last -> autoStop(run, "반대 방향 변화(${run.last} → $v)", SeatStopCause.WRONG_DIRECTION)
                     v != run.last -> {
                         run.last = v
                         restartNoChange(run)
                     }
                 }
             }
-            SeatPhase.CONFIRMING -> if (!onTarget(req, v)) conclude(run, false, "정지 후 위치 변화($v)")
-            else -> Unit // STOPPING: values before the motion ended decide nothing.
+            SeatPhase.CONFIRMING -> if (!onTarget(req, v)) {
+                val lastRead = run.reads.lastOrNull()
+                when {
+                    v == null || v !in l.range -> untrusted(run, v)
+                    lastRead != null -> if (v != lastRead) note(run, SeatStopCause.MOVED_AFTER_STOP)
+                    against(run, v) -> note(run, SeatStopCause.WRONG_DIRECTION)
+                }
+                conclude(run, false, "정지 후 위치 변화($v)")
+            }
+            // STOPPING: values before the motion ended decide nothing, but distrust is kept for the result.
+            SeatPhase.STOPPING -> when {
+                v == null || v !in l.range -> untrusted(run, v)
+                else -> {
+                    if (against(run, v)) note(run, SeatStopCause.WRONG_DIRECTION)
+                    run.last = v
+                }
+            }
+            else -> Unit
         }
     }
 
@@ -313,8 +335,9 @@ class SeatMoveCore(
     private fun onListenerFault(run: Run, why: String) {
         if (run.fault == null) run.fault = why
         latch(run, why)
+        note(run, SeatStopCause.LISTENER_FAILED)
         when (run.phase) {
-            SeatPhase.MOVING -> autoStop(run, why)
+            SeatPhase.MOVING -> autoStop(run, why, SeatStopCause.LISTENER_FAILED)
             SeatPhase.CONFIRMING -> conclude(run, false, why)
             else -> update() // before the entry the gate refuses; while stopping the STOPs already go
         }
@@ -323,7 +346,7 @@ class SeatMoveCore(
     private fun restartNoChange(run: Run) {
         run.noChange?.cancel()
         val ms = run.req.limits.noChangeMs
-        run.noChange = scheduler.schedule(ms) { if (current === run && run.phase == SeatPhase.MOVING) autoStop(run, "무변화 제한 ${ms}ms") }
+        run.noChange = scheduler.schedule(ms) { if (current === run && run.phase == SeatPhase.MOVING) autoStop(run, "무변화 제한 ${ms}ms", SeatStopCause.NO_CHANGE) }
     }
 
     // --- STOP ---
@@ -334,8 +357,22 @@ class SeatMoveCore(
         mark(run) { copy(held = why) }
     }
 
+    /** The first cause stays; a later failure of trust is kept as faultAfter, never lost or parsed from text. */
+    private fun note(run: Run, cause: SeatStopCause) {
+        if (run.cause == null) run.cause = cause else if (cause.fault && cause != run.cause) run.faultAfter = true
+    }
+
+    /** Moving away from the target compared with the last value seen (a partial move toward it is no fault). */
+    private fun against(run: Run, v: Int): Boolean = if (run.req.target > run.req.start) v < run.last else v > run.last
+
+    /** A value after the motion ended that cannot be trusted (missing or out of range); an in-range one short of the target is not. */
+    private fun untrusted(run: Run, v: Int?) {
+        if (v == null) note(run, SeatStopCause.NO_VALUE) else if (v !in run.req.limits.range) note(run, SeatStopCause.OUT_OF_RANGE)
+    }
+
     /** [abort] (every cause but the target): latched. The attempt's own first STOP, unless one was sent already. */
-    private fun autoStop(run: Run, reason: String, abort: Boolean = true) {
+    private fun autoStop(run: Run, reason: String, cause: SeatStopCause, abort: Boolean = true) {
+        note(run, cause)
         if (abort) latch(run, reason)
         if (!run.stopSent) sendStop(run, reason, run.autoStopIds.removeFirst())
     }
@@ -367,6 +404,7 @@ class SeatMoveCore(
         val mark = snap?.stops?.firstOrNull { it.requestId == id }
         if (current !== run || mark == null || mark.terminal) return log("끝났거나 중복된 STOP #$id 응답 무시: $text")
         run.stopTimers.remove(id)?.cancel()
+        if (!ok) note(run, SeatStopCause.STOP_FAILED)
         markStop(run, id) { copy(state = if (ok) SeatRequestState.COMPLETED else SeatRequestState.FAILED, answer = text) }
         tryFinish(run)
     }
@@ -417,7 +455,10 @@ class SeatMoveCore(
             run.reads += v
             update { copy(reads = run.reads.toList()) }
             when {
-                !onTarget(req, v) -> conclude(run, false, "정지 후 위치 ${v ?: "조회 실패($err)"}: 범위 ${req.limits.range}, 목표 ${req.target}±${req.limits.tolerance} 밖")
+                !onTarget(req, v) -> {
+                    untrusted(run, v)
+                    conclude(run, false, "정지 후 위치 ${v ?: "조회 실패($err)"}: 범위 ${req.limits.range}, 목표 ${req.target}±${req.limits.tolerance} 밖")
+                }
                 run.reads.size < req.limits.confirmReads -> scheduler.schedule(req.limits.confirmIntervalMs) { confirm(run, token) }
                 else -> conclude(run, true, "정지 후 ${run.reads.size}회 조회가 모두 목표 ${req.target}±${req.limits.tolerance} 안")
             }
@@ -467,7 +508,22 @@ class SeatMoveCore(
         current = null
         evidence = snap?.takeIf { run.saved && storageFault == null && removable(it, run) }
         log("시트 작업 ${run.req.jobId} 끝: $outcome, $why")
-        update { copy(phase = SeatPhase.DONE, outcome = outcome, reason = why, reads = run.reads.toList()) }
+        val s = snap?.takeIf { run.saved }
+        val result = SeatAttemptResult(
+            jobId = run.req.jobId,
+            moveRequestId = run.req.moveRequestId,
+            purpose = run.req.purpose,
+            outcome = outcome,
+            endedAs = outcome,
+            firstCause = run.cause ?: SeatStopCause.NOT_SENT.takeIf { outcome == SeatOutcome.NOT_SENT },
+            faultAfter = run.faultAfter,
+            allAnswered = s == null || (s.move.terminal && s.stops.all { it.terminal }),
+            stoppedAfterMove = s != null && s.move.state == SeatRequestState.COMPLETED &&
+                s.stops.lastOrNull { it.afterMove }?.state == SeatRequestState.COMPLETED,
+            readsAfterStop = run.reads.toList(),
+            lastRead = run.reads.lastOrNull()?.takeIf { it in run.req.limits.range },
+        )
+        update { copy(phase = SeatPhase.DONE, outcome = outcome, reason = why, reads = run.reads.toList(), result = result) }
     }
 
     private fun cancelTimers(run: Run) {
@@ -492,6 +548,43 @@ class SeatMoveCore(
         if (storageFault == null) storageFault = "시트 기록 저장 실패(${s.jobId}). 새 이동을 막아요"
         log(storageFault!!)
         return false
+    }
+
+    /**
+     * Keeps this core's finished record as held for [cause] (a user change, a failed watch, a refused or failed
+     * restore), so that a later run sees why it was not restored. Only for the record of [jobId] whose latest MOVE is
+     * [moveRequestId], with every request ended, an outcome and a consistent shape; never while an attempt runs, never
+     * with a load lock or a storage fault. A moved record becomes HELD; a NOT_SENT one keeps NOT_SENT (no MOVE ever
+     * entered) and only gains the cause. The first cause stays. Nothing is deleted; the clean-up evidence is dropped.
+     * null = kept (also when nothing had to change); else why not.
+     */
+    fun holdRecord(jobId: String, moveRequestId: String, cause: String): String? {
+        val s = snap
+        val why = when {
+            loadLock != null -> loadLock
+            storageFault != null -> storageFault
+            current != null -> "진행 중인 시트 작업이 있어 보류로 고정하지 않아요"
+            s == null -> "보류로 고정할 시트 기록이 없어요"
+            s.jobId != jobId || s.move.requestId != moveRequestId -> "다른 작업이나 이전 요청의 기록이라 고치지 않아요"
+            !s.move.terminal || s.stops.any { !it.terminal } || s.outcome == null -> "끝나지 않은 요청이 있어 보류로 고정하지 않아요"
+            !s.stoppedConsistently() -> "앞뒤가 맞지 않는 기록이라 고치지 않아요"
+            cause.isBlank() -> "보류 원인이 비어 있어요"
+            else -> null
+        }
+        if (why != null) return why.also { log("시트 기록 보류 고정 거부: $it") }
+        evidence = null
+        val kept = if (s!!.outcome == SeatOutcome.NOT_SENT) SeatOutcome.NOT_SENT else SeatOutcome.HELD
+        val next = s.copy(outcome = kept, held = s.held ?: cause)
+        val saved = next == s || persist(next)
+        // The state follows the snapshot in memory either way: never again a confirmed result to clean or restore
+        // from. A failed save keeps the storage fault (state.lock): the disk may still hold the earlier record.
+        update {
+            val r = result?.takeIf { it.moveRequestId == moveRequestId }?.copy(outcome = kept, heldAfter = next.held)
+            copy(outcome = r?.outcome ?: outcome, result = r ?: result, clearable = false)
+        }
+        if (!saved) return storageFault
+        log("시트 기록 보류 고정(${s.jobId}): ${next.held}")
+        return null
     }
 
     private fun ids(s: SeatSnapshot) = listOf(s.move.requestId) + s.stops.map { it.requestId }
