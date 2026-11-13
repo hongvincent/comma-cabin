@@ -176,6 +176,17 @@
   - 원문 로그(빌드 산출물, 커밋하지 않음): `app/build/reports/step25-seat-core/`의 `fix1-red-interrupt.log`, `fix1-seat-tests.log`, `fix1-verify-full.log`.
 - F11은 계속 미충족이다. 실기와 제품 연결은 확인하지 않았다.
 
+#### 4-1-4. STEP 26 시트 복원 기록 파일 (2026-11-13, 단위 검증만)
+
+- **범위**: 4-1-3 코어의 기록 인터페이스에 실제 파일 구현(`FileSeatJournal`)과 엄격한 JSON 코덱(formatVersion 1)을 더했다(`seat/SeatJournalFile.kt`).
+  - 파일 이름, 형식, 쓰기 경로, 실패 계약은 [../seat-recovery-format.md](../seat-recovery-format.md)에 정리했다.
+  - 앱에서 만들거나 연결하지 않았다. 테스트는 JVM 임시 디렉터리의 파일만 썼다. 실제 Android 파일, SDK, 기기 호출은 0이다.
+- **검증**(JDK 17, `./gradlew --max-workers=1 :app:testDebugUnitTest :app:lintDebug :app:assembleDebug`, exit 0):
+  - JUnit 347개 통과(기존 331 + 기록 파일 16). 실패·오류·skip 0. lint 오류 0, 기존 경고 5. debug 빌드 성공(설치하지 않음).
+  - 테스트 범위: 모든 필드의 왕복, 표준 JSON만 받는 엄격한 거부와 원본 바이트 보존, 256 KiB 상한, 존재 판정 불가·접근 오류, 형식에 안 맞는 기록 쓰기 거부, 덮어쓰기·요청 ID 의미 변경 금지, 원자적 교체 미지원·디렉터리 fsync 실패, 코어와 함께 쓸 때 MOVE 0·STOP 허용·재실행 잠금.
+  - 원문 로그(빌드 산출물, 커밋하지 않음): `app/build/reports/step26-seat-journal/fix1-verify-full.log`.
+- 앱 연결(`filesDir`·lease·owner), 기록 정리, 자동 복원, 전역 비상 STOP은 후속 단계다. F11은 계속 미충족이다.
+
 ### 4-2. 무드등 색
 
 1. 정상 차량 설정 앱 라이트 > 무드 조명 [켜기] → SDK 스위치 ON.
