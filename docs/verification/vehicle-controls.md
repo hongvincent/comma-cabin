@@ -273,6 +273,32 @@
   - 원문 로그(빌드 산출물, 커밋하지 않음): `app/build/reports/step33-rest-seat/fix3-verify-full.log`.
 - 앱 연결과 release QA는 다음 단계다. 위치 Int 0 문제로 환경을 검증할 수 없어 F11은 계속 미충족이다.
 
+#### 4-1-9. STEP 34 시트 owner 앱 연결 (2026-11-13, 단위 검증 + release 에뮬레이터 실행)
+
+- **범위**: STEP 33 owner를 앱에 연결했다. `VERIFIED_SEAT_ENVIRONMENT = null`은 그대로라 새 휴식은 시트 capability·조회·감시·MOVE를 하지 않는다(토큰도 null). 시트 쪽 동작은 이전 실행의 미완료 기록에 보내는 안전 STOP과 그 기록 보존, 수동 확인 안내뿐이다.
+- **연결 계약**
+  - `CabinProcess`가 owner 하나를 만든다. 무드등·공조와 같은 `SdkLane`을 쓰되 별도의 고정 owner 객체(`Any()`)를 쓴다. 이 owner의 STOP은 같은 owner의 이동 쓰기(motion key가 있는 WRITE)만 포기시키고, 무드등·공조 쓰기는 건드리지 않는다.
+  - 기어 신호는 `CabinProcess`의 주차 콜백에서 owner로 바로 넘긴다. 시작 때 무드등·공조 다음에 `seat.start()`를 부른다.
+  - `MainActivity`는 세션 번호→owner 토큰을 직접 매핑하고, 종료 때 그 토큰과 종료 사유로만 `onRestEnd`를 부른다.
+  - 문·화면 신호는 `SeatActivityRelay`가 현재 Activity의 것만 넘긴다. 새 Activity가 붙으면 문을 "모름"으로 되돌린 뒤 화면 보임을 알리고, 그 뒤에 문 구독을 시작한다. 옛 Activity의 늦은 신호는 무시한다.
+  - 개발 진단(무드등·공조 진단, 진단 파일, 시트 프리셋 진단 요청·기록 이상, 다른 시트 이동의 STOP 대기)은 새 시트 APPLY만 막는다. 안전 STOP과 원복 판단은 막지 않는다.
+  - 기록 파일은 앱 `filesDir/rest-seat-recovery.json`(쓰기 중 임시 파일 포함)만 쓴다.
+- **화면**: 기존 "시트 자동 조절은 아직 지원하지 않아요" 안내는 유지한다. 시트 기록이 실제로 남았거나(LOCKED/HELD) STOP 확인이 안 된 경우에만 준비 화면과 종료 화면에 짧은 수동 확인 안내를 더한다. 버튼은 없다.
+- **검증**(JDK 17, `./gradlew --max-workers=1 :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleRelease`, exit 0):
+  - JUnit 410개 통과(STEP 33 405 + 5). 실패·오류·skip 0. lint 오류 0, 기존 경고 5. debug·release 빌드 성공.
+  - QA APK: 0.2.1(versionCode 3), 서명 전 release를 zipalign 뒤 로컬 debug 키로 v3 서명(QA 전용, 배포용 아님). SHA-256 `91a55dbc…0538a5`, 소스 지문 `8e98a110…0941a8`(83개 파일).
+- **release 에뮬레이터 실행(원본 에뮬레이터, QA APK `qa/final/app-release-qa-step34.apk`)**: 실차가 아닌 에뮬레이터에서의 실행이다.
+  - 준비 → 휴식 → 10초 뒤 어두운 화면 → 자연 시간 종료(TIME_UP) 1회, 실제 다른 앱(내비게이션) 전환 앱 이탈(APP_LEFT) 1회 통과. 두 휴식 모두 시트 토큰 null, 시트 호출 0, Console 시트 이동 0.
+  - 끝난 뒤 Console 시트 위치·무드등·공조 전원/풍량·기어 P·문 상태가 설치 전과 같았다. 원본 release는 run-as가 거부돼 앱 파일은 직접 보지 않았다.
+- **release 에뮬레이터 실행(복제 에뮬레이터, QA가 심은 기록)**: 실제 MOVE 실험이 아니라 QA가 직접 써 넣은 미완료 APPLY 기록(MOVE `ENTERING`, 응답 없음)이다. 원본 release는 debuggable이 아니라 run-as로 파일을 넣을 수 없어, 원본 AVD를 복제한 별도 홈에서 아래 순서로 했다.
+  1. 심기(debug): 같은 패키지의 debug 빌드(`qa/final/app-debug-step34.apk`)를 설치하고 run-as로 기록 파일만 썼다. 앱은 실행하지 않았다.
+  2. 검증(release): 같은 QA APK `91a55dbc…0538a5`를 덮어 설치하고(설치본 해시 일치) 실행했다. 앱 시작 때 그 기록에 안전 STOP 1회를 보냈고 `onComplete(STOP)`을 받았다(물리 정지는 확인하지 않음). 준비 화면과 종료 화면에 수동 확인 안내가 보였다. 그 실행의 새 휴식은 시트 토큰 null, 시트 이동 0.
+  3. 읽기(debug): 종료 뒤 debug 빌드를 다시 덮어 설치하고(실행하지 않음) run-as로 파일만 읽었다. 기록은 지워지지 않았다: 심은 MOVE `ENTERING`은 그대로, release 실행이 보낸 STOP이 `COMPLETED`로 덧붙고 결과는 비어 있다.
+  - STOP·화면 증거는 2단계(release) 것이고, 파일 내용은 3단계(debug 읽기) 것이다.
+  - 복제본은 끄고 보존했다(삭제하지 않음, 마지막 설치본은 debug). 원본 AVD의 고정 파일 해시는 복제 전후 같았다.
+- 원문(빌드 산출물, 커밋하지 않음): `app/build/reports/step34-seat-app/`(`fix1-verify-full.log`, `qa/final/`, `logs/`, `png/`, `clone/`).
+- 환경 값은 여전히 없다(위치 Int 0). 제품은 시트를 움직이지 않고, F11은 계속 미충족이다.
+
 ### 4-2. 무드등 색
 
 1. 정상 차량 설정 앱 라이트 > 무드 조명 [켜기] → SDK 스위치 ON.

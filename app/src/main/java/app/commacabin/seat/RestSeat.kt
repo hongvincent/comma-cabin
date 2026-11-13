@@ -101,6 +101,11 @@ class RestSeat(
     private val environment: SeatEnvironment? = VERIFIED_SEAT_ENVIRONMENT,
     private val newId: () -> String = { UUID.randomUUID().toString() },
     private val log: (String) -> Unit = {},
+    /**
+     * Why a NEW apply must not start now (debug seat tools, their records, another seat motion). Asked when a rest
+     * starts and at the apply's gate only: never for a safety STOP, an allowed restore or callbacks of a running job.
+     */
+    private val startBlock: () -> String? = { null },
 ) {
     var state = RestSeatState()
         private set
@@ -175,6 +180,10 @@ class RestSeat(
         val c = core ?: return null
         if (job != null) return null.also { log("이전 시트 작업이 끝나지 않아 이번 휴식은 시트를 건드리지 않아요") }
         if (c.state.lock != null || c.state.snapshot != null) return null
+        startBlock()?.let { why ->
+            log("새 시트 적용 안 함: $why")
+            return null
+        }
         val j = Job(++tokenSeq, newId())
         job = j
         val g = ++gen
@@ -260,8 +269,26 @@ class RestSeat(
             j.ending -> "휴식이 끝났어요"
             doorClosed != true -> "조수석 문이 닫혀 있지 않거나 확인되지 않았어요"
             !screenShown -> "화면이 보이지 않아요"
-            else -> null
+            else -> startBlock()
         }
+    }
+
+    /**
+     * For the debug write tools: the product seat holds a job (running, held or failed) or a record of an earlier run.
+     * null with no verified environment and nothing stored, so it never blocks the other features then.
+     */
+    fun busyReason(): String? = when {
+        job != null -> "제품 시트 작업이나 보류 기록이 있어요"
+        state.phase == RestSeatPhase.LOCKED -> "제품 시트 기록이 남아 있어요"
+        core?.state?.lock != null -> "제품 시트 기록에 문제가 있어요"
+        else -> null
+    }
+
+    /** A short product sentence, only when a seat record really needs the person's own check; null otherwise. */
+    fun productNotice(): String? = when (state.phase) {
+        RestSeatPhase.LOCKED, RestSeatPhase.HELD -> "이전 시트 조절이 끝까지 확인되지 않았어요. 차량에서 시트 자세를 직접 확인해 주세요."
+        RestSeatPhase.STOP_FAILED, RestSeatPhase.NO_ANSWER -> "시트가 멈췄는지 확인되지 않았어요. 차량에서 시트 자세를 직접 확인해 주세요."
+        else -> null
     }
 
     // --- core results ---

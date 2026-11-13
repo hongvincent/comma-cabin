@@ -91,6 +91,12 @@ class MainActivity : ComponentActivity() {
     private val lightingRuns = mutableMapOf<Int, Int>()
     /** RestFlow session id (this Activity only) → climate run id issued by the process-wide owner. */
     private val climateRuns = mutableMapOf<Int, Int>()
+    /** RestFlow session id (this Activity only) → seat token issued by the process-wide owner (never the session id itself). */
+    private val seatRuns = mutableMapOf<Int, Int>()
+    /** The seat's short product sentence, only when a seat record needs the person's own check. */
+    private val seatNotice = mutableStateOf<String?>(null)
+    private val seatListener: (app.commacabin.seat.RestSeatState) -> Unit = { seatNotice.value = cabin.seat.productNotice() }
+    private val debugSeatBusy: () -> String? = { presetSeatBusy() }
     private val lightingListener: (LightingUi) -> Unit = { lightingState.value = it }
     private val climateListener: (ClimateUi) -> Unit = { climateState.value = it }
     private val debugBusy: () -> String? = { debugBusyReason() }
@@ -142,6 +148,7 @@ class MainActivity : ComponentActivity() {
         }
         door = DoorMonitor(readPort, scheduler, { line -> Log.i(DOOR_TAG, line) }) { state ->
             rest.onDoor(state)
+            cabin.seatSignals.door(this, state.status)
             bench.onDoor(state.status)
             presetBench.onDoor(state.status)
         }
@@ -189,14 +196,16 @@ class MainActivity : ComponentActivity() {
         }
         // Once per session each; the end hook runs after the session's sound was told to stop.
         rest.onSessionStarted = { id, on ->
+            cabin.seat.onRestStart()?.let { seatRuns[id] = it }
             val run = cabin.lighting.onRestStart(on)
             lightingRuns[id] = run
             val s = rest.state
             val climateRun = cabin.climate.onRestStart(ClimateChoice(s.fan, s.temp, s.tempC))
             climateRuns[id] = climateRun
-            Log.i(REST_TAG, "session $id → lighting run $run, climate run $climateRun (activity ${System.identityHashCode(this)})")
+            Log.i(REST_TAG, "session $id → lighting run $run, climate run $climateRun, seat token ${seatRuns[id]} (activity ${System.identityHashCode(this)})")
         }
         rest.onSessionEnded = { id, reason ->
+            seatRuns.remove(id)?.let { cabin.seat.onRestEnd(it, reason) }
             val run = lightingRuns.remove(id)
             val climateRun = climateRuns.remove(id)
             Log.i(REST_TAG, "session $id end $reason → lighting run $run, climate run $climateRun")
@@ -255,6 +264,9 @@ class MainActivity : ComponentActivity() {
         probe.start()
         bench.start()
         cabin.debugBusy = debugBusy
+        cabin.debugSeatBusy = debugSeatBusy
+        cabin.seat.onState = seatListener
+        seatNotice.value = cabin.seat.productNotice()
         cabin.lighting.onState = lightingListener
         lightingState.value = cabin.lighting.state
         cabin.climate.onState = climateListener
@@ -291,7 +303,7 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(colorScheme = darkColorScheme()) {
                 // Development diagnostics are a debug-only side screen and can never be open during a rest.
                 if (!devToolsOpen.value || restState.value.screen == Screen.RESTING) {
-                    RestScreen(restState.value, audioState.value, lightingState.value, climateState.value, restActions)
+                    RestScreen(restState.value, audioState.value, lightingState.value, climateState.value, restActions, seatNotice.value)
                 } else {
                     BackHandler { devToolsOpen.value = false }
                     DevTools()
@@ -381,8 +393,11 @@ class MainActivity : ComponentActivity() {
     /** Door polling and its subscription run only while the screen is visible; each start is a new generation. */
     override fun onStart() {
         super.onStart()
+        // The seat relay first: it starts with the door unknown, so the door callbacks below already count for this Activity.
+        cabin.seatSignals.attach(this)
         door.start()
         rest.onVisible()
+        cabin.seatSignals.door(this, door.state.status)
         // Read-only: the driver temperature range and step for the ready screen's ± buttons.
         if (cabin.climate.state.tempRange == null) cabin.climate.loadTempRange()
         // Read-only, once per showing: what the vehicle has now for each record left (no records = no call).
@@ -409,6 +424,8 @@ class MainActivity : ComponentActivity() {
         cabin.climate.stopCheck(this)
         audio.stopAll()
         tts.stopSpeech()
+        // After the rest end and the sound stop above: only this Activity's screen signal, never an older one's.
+        cabin.seatSignals.hidden(this)
         started = false
         syncControlVisibility()
         door.stop()
@@ -473,6 +490,9 @@ class MainActivity : ComponentActivity() {
         if (cabin.lighting.onState === lightingListener) cabin.lighting.onState = {}
         if (cabin.climate.onState === climateListener) cabin.climate.onState = {}
         if (cabin.debugBusy === debugBusy) cabin.debugBusy = { null }
+        if (cabin.debugSeatBusy === debugSeatBusy) cabin.debugSeatBusy = { null }
+        if (cabin.seat.onState === seatListener) cabin.seat.onState = {}
+        cabin.seatSignals.detach(this)
         main.removeCallbacksAndMessages(null)
         restoreWindow()
         audio.stopAll()

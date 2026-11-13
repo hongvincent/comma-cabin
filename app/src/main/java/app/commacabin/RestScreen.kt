@@ -94,13 +94,13 @@ class RestActions(
 )
 
 @Composable
-fun RestScreen(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions) {
+fun RestScreen(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions, seatNotice: String? = null) {
     // Light product colors for everything inside (dialogs included); the debug tools keep the Activity's theme.
-    MaterialTheme(colorScheme = CabinColors) { CabinScreen(state, audio, lighting, climate, actions) }
+    MaterialTheme(colorScheme = CabinColors) { CabinScreen(state, audio, lighting, climate, actions, seatNotice) }
 }
 
 @Composable
-private fun CabinScreen(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions) {
+private fun CabinScreen(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions, seatNotice: String?) {
     val dim = state.screen == Screen.RESTING && state.dimmed
     Box(
         Modifier
@@ -142,9 +142,9 @@ private fun CabinScreen(state: RestState, audio: AudioUi, lighting: LightingUi, 
                         ) {
                             when (state.screen) {
                                 Screen.ONBOARDING -> Onboarding(wide)
-                                Screen.READY -> Ready(state, lighting, climate, actions, twoColumns)
+                                Screen.READY -> Ready(state, lighting, climate, actions, twoColumns, seatNotice)
                                 Screen.RESTING -> Resting(state, audio, lighting, climate, actions, wide)
-                                Screen.ENDED -> Ended(state, audio, lighting, climate, actions, twoColumns)
+                                Screen.ENDED -> Ended(state, audio, lighting, climate, actions, twoColumns, seatNotice)
                             }
                         }
                     }
@@ -246,13 +246,13 @@ private fun Onboarding(wide: Boolean) {
 private const val SEAT_NOTE = "시트 자동 조절은 아직 지원하지 않아요. 차량에서 직접 편한 자세를 맞춰 주세요."
 
 @Composable
-private fun Ready(state: RestState, lighting: LightingUi, climate: ClimateUi, actions: RestActions, wide: Boolean) {
+private fun Ready(state: RestState, lighting: LightingUi, climate: ClimateUi, actions: RestActions, wide: Boolean, seatNotice: String?) {
     Columns(
         wide,
         left = {
             RestTimeHero(state, actions)
             Conditions(state)
-            SeatNotice()
+            SeatNotice(seatNotice)
             LightingRecordsOrEntry(lighting, actions)
             ClimateRecordsOrEntry(climate, actions)
             lighting.problem?.let { Text(it, color = Warn, fontSize = 22.sp) }
@@ -411,15 +411,19 @@ private fun stepTemp(value: Float, dir: Int, range: TempRange): Float {
     return (range.min + k * range.increment).coerceIn(range.min, range.max)
 }
 
-/** The seat cannot be adjusted by the app yet: a fact, with no toggle and no seat state. */
+/**
+ * The seat cannot be adjusted by the app yet: a fact, with no toggle and no seat state. [record]: one short sentence
+ * only when a seat record from before really needs the person's own check (no buttons).
+ */
 @Composable
-private fun SeatNotice() {
+private fun SeatNotice(record: String?) {
     Panel(spacing = 8.dp, padding = 24.dp) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("편한 자세 (시트)", Modifier.weight(1f), color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.SemiBold)
             StatusTag("앱에서 조절 안 함", TextSub)
         }
         Text(SEAT_NOTE, color = TextSub, fontSize = 22.sp)
+        record?.let { Text(it, color = Warn, fontSize = 22.sp) }
     }
 }
 
@@ -656,7 +660,7 @@ private fun DimmedRest(state: RestState) {
 }
 
 @Composable
-private fun Ended(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions, wide: Boolean) {
+private fun Ended(state: RestState, audio: AudioUi, lighting: LightingUi, climate: ClimateUi, actions: RestActions, wide: Boolean, seatNotice: String?) {
     val ending = state.ending ?: return
     Columns(
         wide,
@@ -690,6 +694,13 @@ private fun Ended(state: RestState, audio: AudioUi, lighting: LightingUi, climat
             }
         },
         right = {
+            // Only when a seat record needs the person's own check: the same short sentence, no buttons.
+            seatNotice?.let {
+                Panel(spacing = 12.dp, padding = 24.dp) {
+                    Text("시트", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Text(it, color = Warn, fontSize = 20.sp)
+                }
+            }
             if (lighting.items.isNotEmpty() || lighting.restLine != null) {
                 Panel(spacing = 12.dp, padding = 24.dp) {
                     Text("무드등", color = TextMain, fontSize = 24.sp, fontWeight = FontWeight.Bold)

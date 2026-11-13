@@ -11,6 +11,8 @@ import app.commacabin.climate.RestClimate
 import app.commacabin.climate.SdkClimatePort
 import app.commacabin.control.ControlLoad
 import app.commacabin.control.FileControlStore
+import app.commacabin.control.FilePresetStore
+import app.commacabin.control.PresetStage
 import app.commacabin.lighting.FileLightStore
 import app.commacabin.lighting.RestLighting
 import app.commacabin.lighting.SdkLightingPort
@@ -23,6 +25,11 @@ import app.commacabin.sdk.CarParkingSource
 import app.commacabin.sdk.PleosControlPort
 import app.commacabin.sdk.PleosLightPort
 import app.commacabin.sdk.SdkLane
+import app.commacabin.seat.ControlSeatAxisPort
+import app.commacabin.seat.FileSeatJournal
+import app.commacabin.seat.RestSeat
+import app.commacabin.seat.SeatActivityRelay
+import app.commacabin.seat.controlCapability
 import java.io.File
 
 /**
@@ -55,6 +62,9 @@ class CabinProcess private constructor(context: Context) {
     /** Set by the live Activity: its debug tools' busy reason. */
     var debugBusy: () -> String? = { null }
 
+    /** Set by the live Activity: its debug seat preset tool's busy reason. */
+    var debugSeatBusy: () -> String? = { null }
+
     val lighting: RestLighting = RestLighting(
         port = SdkLightingPort(PleosLightPort(vehicle.getLight(), lane, this), PleosControlPort(vehicle, lane, this)),
         store = FileLightStore(File(files, FileLightStore.FILE_NAME)),
@@ -76,13 +86,39 @@ class CabinProcess private constructor(context: Context) {
         log = { line -> Log.i(CLIMATE_TAG, line) },
     )
 
+    /**
+     * The product seat's own SDK owner: its STOP gives up only this owner's motion writes (writes with a motion key)
+     * not yet in the SDK, never another owner's. Stable for the whole process; no Activity closes it.
+     */
+    private val seatOwner = Any()
+    private val seatControl = PleosControlPort(vehicle, lane, seatOwner)
+
+    /**
+     * Product seat: no verified environment, so a new rest never reads, watches or moves the seat. At start an
+     * unfinished earlier record still gets its safety STOP and is kept (never deleted or completed here).
+     */
+    val seat: RestSeat = RestSeat(
+        port = ControlSeatAxisPort(seatControl),
+        capability = controlCapability(seatControl),
+        journal = FileSeatJournal(File(files, FileSeatJournal.FILE_NAME)),
+        scheduler = scheduler,
+        parking = { parking.state },
+        log = { line -> Log.i(SEAT_TAG, line) },
+        startBlock = { debugBusy() ?: debugFiles() ?: debugSeatBusy() ?: presetFile() ?: lane.motion?.let { "다른 시트 이동의 STOP 응답 전이에요" } },
+    )
+
+    /** The live Activity's door and screen, for the seat only (an older Activity's late signals are dropped). */
+    val seatSignals = SeatActivityRelay(seat)
+
     init {
         parking = CarParkingSource(context.applicationContext, main) { state ->
+            seat.onParking(state)
             lighting.onParking(state)
             climate.onParking(state)
         }
         lighting.start()
         climate.start()
+        seat.start()
         parking.start()
     }
 
@@ -92,8 +128,8 @@ class CabinProcess private constructor(context: Context) {
         climate.onDebugChanged()
     }
 
-    /** For the debug write tools: product lighting or climate busy or holding records. Lighting and climate never block each other. */
-    fun productBusy(): String? = lighting.busyReason() ?: climate.busyReason()
+    /** For the debug write tools: product lighting, climate or seat busy or holding records. They never block each other. */
+    fun productBusy(): String? = lighting.busyReason() ?: climate.busyReason() ?: seat.busyReason()
 
     /** Debug record files (also damaged ones) block product lighting even when no Activity holds them. */
     private fun debugFiles(): String? = when {
@@ -102,10 +138,17 @@ class CabinProcess private constructor(context: Context) {
         else -> null
     }
 
+    /** The debug seat preset record, also with no Activity: damaged, or a request the operator has not confirmed. */
+    private fun presetFile(): String? {
+        val jobs = FilePresetStore(File(files, FilePresetStore.FILE_NAME)).load() ?: return "시트 프리셋 진단 기록을 읽을 수 없어요"
+        return "시트 프리셋 진단 요청이 운영자 확인 전이에요".takeIf { jobs.any { it.stage != PresetStage.CONFIRMED } }
+    }
+
     companion object {
         private const val TAG = "RestLighting"
         private const val CLIMATE_TAG = "RestClimate"
         private const val LANE_TAG = "SdkLane"
+        private const val SEAT_TAG = "RestSeat"
         private var instance: CabinProcess? = null
 
         /** Main thread only. */

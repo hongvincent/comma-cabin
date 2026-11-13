@@ -53,8 +53,10 @@ class RestSeatTest {
         val journal: SeatJournal = file?.let { FileSeatJournal(it) } ?: memory
         val scheduler = FakeScheduler()
         var parking = PARKED
+        /** A debug-tool block for new applies only. */
+        var block: String? = null
         private var n = 0
-        val seat = RestSeat(port, cap, journal, scheduler, { parking }, env, { "id-${++n}" })
+        val seat = RestSeat(port, cap, journal, scheduler, { parking }, env, { "id-${++n}" }, startBlock = { block })
 
         init {
             seat.onDoor(true)
@@ -669,6 +671,56 @@ class RestSeatTest {
         assertEquals(SeatOutcome.HELD, core.state.result!!.outcome)
         assertTrue(core.state.lock!!.contains("저장 실패"))
         assertFalse(core.state.clearable)
+    }
+
+    // --- STEP 34 app wiring contracts ---
+
+    @Test
+    fun `a debug block stops only a new apply - never the STOP, an allowed restore or a running job's callbacks`() {
+        val r = Rig()
+        r.seat.start()
+        r.block = "디버그 시트 작업 중"
+        assertNull(r.seat.onRestStart())
+        assertEquals(listOf(0, 0, 0, 0, 0), r.calls())
+
+        // A block that appears while the apply waits at its gate refuses it there.
+        val g = Rig()
+        g.seat.start()
+        g.port.holdDispatch = true
+        assertEquals(1, g.seat.onRestStart())
+        g.block = "디버그 시트 작업 중"
+        g.port.runQueued()
+        assertTrue(g.port.entered.isEmpty())
+
+        // A running job: the block comes later and changes nothing for its STOP, restore and clean-up.
+        val w = Rig()
+        w.watching()
+        w.block = "디버그 시트 작업 중"
+        w.seat.onRestEnd(1, EndReason.USER)
+        w.tick()
+        assertEquals(RestSeatPhase.RESTORING, w.phase)
+        w.restoreTo(21)
+        assertEquals(RestSeatPhase.IDLE, w.phase)
+    }
+
+    @Test
+    fun `busy only with a job or a record, and the product sentence names no state, ID or path`() {
+        val empty = Rig(env = null)
+        empty.seat.start()
+        assertNull(empty.seat.busyReason())
+        assertNull(empty.seat.productNotice())
+
+        val pending = SeatSnapshot("qa-job", SeatPurpose.APPLY, SeatAxis.BACKREST, 20, 20, 60, SeatRequestMark("qa-move", SeatRequestState.ENTERING))
+        val locked = Rig(env = null, stored = pending)
+        locked.seat.start()
+        assertNotNull(locked.seat.busyReason())
+        val notice = locked.seat.productNotice()!!
+        for (raw in listOf("qa-job", "qa-move", "LOCKED", "ENTERING", "STOP", ".json", "/")) assertFalse(raw, notice.contains(raw))
+
+        val running = Rig()
+        running.watching()
+        assertNotNull(running.seat.busyReason())
+        assertNull(running.seat.productNotice())
     }
 
     // --- core API ---
