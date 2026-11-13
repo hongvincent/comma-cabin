@@ -354,6 +354,101 @@ class RestFlowTest {
     }
 
     @Test
+    fun `a pickup left from yesterday stays until the user resets it, then the rest can start`() {
+        settings = RestSettings(onboardingVersion = ONBOARDING_VERSION, sound = SoundMode.ON, level = SoundLevel.HIGH, lighting = false, fan = false, temp = false, tempC = 24.5f)
+        val pickup = state.pickupMs // 19:25 on the 12th
+        val starts = mutableListOf<Int>()
+        flow.onSessionStarted = { id, _ -> starts += id }
+        wallShift = 24 * 3_600_000L // the ready screen stayed open: now 19:03 on the 13th
+        runFor(CLOCK_TICK_MS)
+        flow.onHidden()
+        flow.onVisible()
+        runFor(10_000)
+
+        assertEquals(pickup, state.pickupMs) // shown and ticking alone never move it
+        assertEquals(-1L, RestTime.dayOffset(state.pickupMs, state.nowMs, zone))
+        assertEquals(Block.TIME_PASSED, state.timeBlock)
+        flow.start()
+        assertTrue(state.notice!!.startsWith("시작하지 않았어요."))
+
+        flow.resetPickup()
+
+        assertEquals(0L, RestTime.dayOffset(state.pickupMs, state.nowMs, zone))
+        assertTrue(state.restMs >= MIN_REST_MS)
+        assertNull(state.timeBlock)
+        assertNull(state.notice)
+        assertTrue(state.canStart)
+        assertEquals(Screen.READY, state.screen)
+        assertEquals(listOf(SoundMode.ON, SoundLevel.HIGH, false, false, false, 24.5f), with(state) { listOf(sound, level, lighting, fan, temp, tempC) })
+        assertTrue(saved.isEmpty())
+        assertTrue(audio.calls.isEmpty())
+        assertTrue(starts.isEmpty())
+    }
+
+    @Test
+    fun `reset works for too little time and leaves a pickup with enough time alone`() {
+        flow.resetPickup()
+        assertEquals(at(12, 19, 25), state.pickupMs) // enough time: the user's pickup stays
+
+        repeat(3) { flow.adjustPickup(-5) } // pickup 19:10, 5 minutes left
+        runFor(2 * 60_000 + 1_000) // 2:59 left
+        assertEquals(Block.TIME_SHORT, state.timeBlock)
+
+        flow.resetPickup()
+
+        assertTrue(state.pickupMs > at(12, 19, 10))
+        assertNull(state.timeBlock)
+        assertTrue(state.canStart)
+    }
+
+    @Test
+    fun `reset is ignored outside the ready screen and never touches a running rest`() {
+        settings = RestSettings(onboardingVersion = 1)
+        assertEquals(Screen.ONBOARDING, state.screen)
+        val shown = state
+        flow.resetPickup()
+        assertEquals(shown, state)
+
+        flow.dismissOnboarding()
+        flow.start()
+        runFor(18 * 60_000L) // 19:21, 2 minutes left
+        val resting = state
+        val calls = audio.calls.toList()
+        flow.resetPickup()
+        assertEquals(resting, state)
+        assertEquals(calls, audio.calls)
+
+        runFor(2 * 60_000L + REST_TICK_MS)
+        assertEquals(EndReason.TIME_UP, state.ending!!.reason)
+        val ended = state
+        flow.resetPickup()
+        assertEquals(ended, state)
+    }
+
+    @Test
+    fun `rest again right after a natural end keeps the near pickup and the user resets it`() {
+        flow.start()
+        runFor(20 * 60_000L + REST_TICK_MS) // 19:23: the natural end, 2 minutes before the 19:25 pickup
+        assertEquals(EndReason.TIME_UP, state.ending!!.reason)
+
+        flow.restAgain()
+
+        assertEquals(Screen.READY, state.screen)
+        assertEquals(at(12, 19, 25), state.pickupMs) // not passed yet, so kept
+        assertNotEquals(null, state.timeBlock)
+        assertFalse(state.canStart)
+        runFor(5_000)
+        assertEquals(at(12, 19, 25), state.pickupMs) // and not moved by itself
+
+        flow.resetPickup()
+
+        assertTrue(state.pickupMs > at(12, 19, 25))
+        assertTrue(state.canStart)
+        assertEquals(Screen.READY, state.screen)
+        assertEquals(1, audio.calls.count { it.startsWith("begin") })
+    }
+
+    @Test
     fun `leaving and coming back shows the ended screen and does not restart`() {
         flow.start()
         flow.onHidden()

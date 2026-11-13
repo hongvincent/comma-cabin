@@ -68,6 +68,8 @@ import java.util.Locale
 class RestActions(
     val dismissOnboarding: () -> Unit,
     val adjustPickup: (Long) -> Unit,
+    /** [지금 기준으로 다시 설정]: shown only when the time is not enough. */
+    val resetPickup: () -> Unit,
     val start: () -> Unit,
     val touch: () -> Unit,
     val endByUser: () -> Unit,
@@ -293,6 +295,8 @@ private fun RestTimeHero(state: RestState, actions: RestActions) {
             SecondaryButton("+5분", minWidth = 136.dp, minHeight = 80.dp, fontSize = 26) { actions.adjustPickup(5) }
         }
         if (state.pickupMs <= state.nowMs) Text("이미 지난 시각이에요", color = Warn, fontSize = 24.sp)
+        // Only on the user's press: an old or too-near pickup is never moved by itself.
+        if (blocked) SecondaryButton("지금 기준으로 다시 설정", modifier = Modifier.fillMaxWidth(), minHeight = 80.dp, fontSize = 26, onClick = actions.resetPickup)
     }
 }
 

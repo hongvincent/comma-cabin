@@ -170,6 +170,19 @@ class RestFlow(
         update { copy(pickupMs = pickupMs + minutes * 60_000L, nowMs = wallClock(), zone = zone(), notice = null) }
     }
 
+    /**
+     * [지금 기준으로 다시 설정]: the user's own press on the ready screen when the time is not enough. Suggests the
+     * default pickup from the latest clock; nothing else changes and nothing is stored, read or started.
+     * Never called by the flow itself, and ignored when the current pickup still leaves enough time.
+     */
+    fun resetPickup() {
+        if (state.screen != Screen.READY) return
+        val now = wallClock()
+        if (timeBlock(RestTime.restMs(state.pickupMs, now)) == null) return
+        log("pickup reset by user")
+        update { copy(pickupMs = RestTime.defaultPickup(now, zone()), nowMs = now, zone = zone(), notice = null) }
+    }
+
     /** Checks every condition again with the latest vehicle state and time before starting. */
     fun start() {
         if (state.screen != Screen.READY) return

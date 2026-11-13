@@ -277,6 +277,7 @@ class MainActivity : ComponentActivity() {
         val restActions = RestActions(
             dismissOnboarding = rest::dismissOnboarding,
             adjustPickup = rest::adjustPickup,
+            resetPickup = rest::resetPickup,
             start = rest::start,
             touch = rest::touch,
             endByUser = rest::endByUser,
